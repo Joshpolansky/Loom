@@ -1,0 +1,37 @@
+{
+   "type": [
+      "object"
+   ],
+   "properties": {
+      "sample_rate_hz": {
+         "$ref": "#/$defs/int32_t"
+      },
+      "targets": {
+         "$ref": "#/$defs/std::vector<std::string>"
+      }
+   },
+   "additionalProperties": false,
+   "$defs": {
+      "int32_t": {
+         "type": [
+            "integer"
+         ],
+         "minimum": -2147483648,
+         "maximum": 2147483647
+      },
+      "std::string": {
+         "type": [
+            "string"
+         ]
+      },
+      "std::vector<std::string>": {
+         "type": [
+            "array"
+         ],
+         "items": {
+            "$ref": "#/$defs/std::string"
+         }
+      }
+   },
+   "title": "OscilloConfig"
+}

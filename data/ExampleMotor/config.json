@@ -1,0 +1,6 @@
+{
+   "device_name": "Motor_1",
+   "cycle_rate_ms": 10,
+   "max_speed": 0,
+   "max_acceleration": 500
+}

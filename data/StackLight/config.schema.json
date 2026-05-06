@@ -1,0 +1,29 @@
+{
+   "type": [
+      "object"
+   ],
+   "properties": {
+      "blink_rate_ms": {
+         "$ref": "#/$defs/int32_t"
+      },
+      "light_name": {
+         "$ref": "#/$defs/std::string"
+      }
+   },
+   "additionalProperties": false,
+   "$defs": {
+      "int32_t": {
+         "type": [
+            "integer"
+         ],
+         "minimum": -2147483648,
+         "maximum": 2147483647
+      },
+      "std::string": {
+         "type": [
+            "string"
+         ]
+      }
+   },
+   "title": "StackLightConfig"
+}

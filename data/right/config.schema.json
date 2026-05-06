@@ -1,0 +1,42 @@
+{
+   "type": [
+      "object"
+   ],
+   "properties": {
+      "cycle_rate_ms": {
+         "$ref": "#/$defs/int32_t"
+      },
+      "device_name": {
+         "$ref": "#/$defs/std::string"
+      },
+      "max_acceleration": {
+         "$ref": "#/$defs/double"
+      },
+      "max_speed": {
+         "$ref": "#/$defs/double"
+      }
+   },
+   "additionalProperties": false,
+   "$defs": {
+      "double": {
+         "type": [
+            "number"
+         ],
+         "minimum": -1.7976931348623157E308,
+         "maximum": 1.7976931348623157E308
+      },
+      "int32_t": {
+         "type": [
+            "integer"
+         ],
+         "minimum": -2147483648,
+         "maximum": 2147483647
+      },
+      "std::string": {
+         "type": [
+            "string"
+         ]
+      }
+   },
+   "title": "MotorConfig"
+}

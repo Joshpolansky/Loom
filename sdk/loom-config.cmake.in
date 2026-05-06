@@ -1,0 +1,7 @@
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/LoomSdkTargets.cmake")
+
+if(NOT TARGET loom::sdk)
+  message(FATAL_ERROR "The imported target loom::sdk was not found")
+endif()

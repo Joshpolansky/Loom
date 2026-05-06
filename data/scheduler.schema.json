@@ -1,0 +1,93 @@
+{
+   "type": [
+      "object"
+   ],
+   "properties": {
+      "assignments": {
+         "$ref": "#/$defs/std::unordered_map<std::string, crt::ModuleAssignment>"
+      },
+      "classes": {
+         "$ref": "#/$defs/std::vector<crt::ClassDef>"
+      },
+      "defaultClass": {
+         "$ref": "#/$defs/std::string"
+      }
+   },
+   "additionalProperties": false,
+   "$defs": {
+      "bool": {
+         "type": [
+            "boolean"
+         ]
+      },
+      "crt::ClassDef": {
+         "type": [
+            "object"
+         ],
+         "properties": {
+            "cpu_affinity": {
+               "$ref": "#/$defs/int32_t"
+            },
+            "name": {
+               "$ref": "#/$defs/std::string"
+            },
+            "period_us": {
+               "$ref": "#/$defs/int32_t"
+            },
+            "priority": {
+               "$ref": "#/$defs/int32_t"
+            },
+            "spin_us": {
+               "$ref": "#/$defs/int32_t"
+            }
+         },
+         "additionalProperties": false
+      },
+      "crt::ModuleAssignment": {
+         "type": [
+            "object"
+         ],
+         "properties": {
+            "classId": {
+               "$ref": "#/$defs/std::string"
+            },
+            "isolate": {
+               "$ref": "#/$defs/bool"
+            },
+            "order": {
+               "$ref": "#/$defs/int32_t"
+            }
+         },
+         "additionalProperties": false
+      },
+      "int32_t": {
+         "type": [
+            "integer"
+         ],
+         "minimum": -2147483648,
+         "maximum": 2147483647
+      },
+      "std::string": {
+         "type": [
+            "string"
+         ]
+      },
+      "std::unordered_map<std::string, crt::ModuleAssignment>": {
+         "type": [
+            "object"
+         ],
+         "additionalProperties": {
+            "$ref": "#/$defs/crt::ModuleAssignment"
+         }
+      },
+      "std::vector<crt::ClassDef>": {
+         "type": [
+            "array"
+         ],
+         "items": {
+            "$ref": "#/$defs/crt::ClassDef"
+         }
+      }
+   },
+   "title": "crt::SchedulerConfig"
+}

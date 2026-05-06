@@ -1,0 +1,10 @@
+#pragma once
+
+namespace loom {
+
+/// SDK version string baked in at build time from the VERSION file.
+/// The runtime compares this against the value in each module's ModuleHeader
+/// to detect version mismatches at load time.
+inline constexpr const char* kSdkVersion = "@LOOM_SDK_VERSION@";
+
+} // namespace loom

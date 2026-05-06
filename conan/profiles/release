@@ -1,0 +1,8 @@
+include(default)
+
+[settings]
+build_type=Release
+compiler.cppstd=23
+
+[conf]
+tools.cmake.cmaketoolchain:generator=Ninja

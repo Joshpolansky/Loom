@@ -1,0 +1,48 @@
+.watch-page { padding: 12px; }
+.watch-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px }
+.watch-list { display:flex; flex-direction:column; overflow-y: scroll; max-height: 80vh; }
+.watch-row { display:block; padding:6px; border:1px solid #141e2e;}
+.watch-row:first-child { border-radius:6px 6px 0 0 }
+.watch-row:last-child { border-radius:0 0 6px 6px }
+.watch-row:last-child:first-child { border-radius: 6px 6px 6px 6px }
+
+.watch-remove-button { background:none; border:none; color:#b00020; cursor:pointer; font-size:14px }
+.watch-add-button { background:none; border:none; color:#007bff; cursor:pointer; font-size:14px }
+.watch-root-header { display:flex; align-items:baseline; gap:12px; justify-content:space-between }
+.watch-meta { display:flex; align-items:center; gap:12px }
+.watch-label { font-weight:600; font-size:14px }
+.watch-path { color:#666; font-size:12px }
+.watch-root-body { margin-top:6px; padding-left:20px }
+.watch-value { margin:0 }
+.watch-actions { display:flex; gap:6px; align-items:center }
+.watch-empty { color:#666 }
+.watch-val-loading { color:#999 }
+.watch-val-error { color:#b00020 }
+.watch-tree { max-height:240px; overflow:auto; font-size:13px }
+.watch-scalar { padding:4px 8px; }
+.drag-handle { cursor:grab; padding-right:8px; margin-right:8px; border-right:1px solid #eee }
+
+.picker-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.4); display:flex; align-items:center; justify-content:center }
+.picker-modal { width:720px; max-height:80vh; background:rgb(34, 37, 50); border-radius:8px; overflow:hidden; display:flex; flex-direction:column }
+.picker-modal-wide { width:920px }
+.picker-header { display:flex; justify-content:space-between; padding:8px 12px; border-bottom:1px solid #eee }
+.picker-body { padding:12px; overflow:auto; height: 60vh;}
+.picker-body-split { display:flex; gap:12px }
+.picker-modules { width:260px; overflow:auto; border-right:1px solid #26324b; padding-right:8px }
+.picker-tree-area { flex:1; display:flex; flex-direction:column }
+.picker-module-row { padding:8px; border-bottom:1px solid #26324b; cursor:pointer }
+.picker-module-row.active { background:#26324b }
+.picker-module-name { font-weight:600 }
+.picker-module-id { font-size:12px; color:#666 }
+.picker-tree-header { padding:8px 0; border-bottom:1px solid #eee }
+.picker-tree-body { padding:8px 0; overflow:auto }
+.picker-node { padding-left:8px }
+.picker-node-row { display:flex; align-items:center; gap:8px }
+.picker-node-toggle { background:none; border:none; cursor:pointer }
+.picker-node-name { font-size:13px }
+.picker-node-children { padding-left:18px }
+.picker-root-action { margin-bottom:8px }
+.picker-module { margin-bottom:8px }
+.picker-field { display:flex; gap:8px; align-items:center; padding:4px 0 }
+.picker-field.disabled { opacity:0.6 }
+.picker-footer { display:flex; justify-content:flex-end; gap:8px; padding:8px 12px; border-top:1px solid #eee }

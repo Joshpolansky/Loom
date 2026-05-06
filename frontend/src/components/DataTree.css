@@ -1,0 +1,204 @@
+/* DataTree component styles */
+
+.data-tree {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  width: 100%;
+  overflow-y: scroll;
+}
+.data-tree.compact{
+  font-size: 0.75rem;
+  max-height: 68px;
+}
+/* ---------- leaf rows: grid layout for aligned key/value columns ---------- */
+
+/* Wrapper is just a plain block; each leaf is a two-column grid row */
+.dt-table {
+  display: contents;
+}
+.dt-branch-row { display:flex; align-items:center; gap:8px }
+.dt-add { margin-left:8px; background:none; border:1px solid #ddd; border-radius:4px; width:22px; height:22px; cursor:pointer }
+.dt-add:hover { background:#f3f6ff }
+
+.dt-leaf {
+  display: grid;
+  grid-template-columns: 0.5fr 1fr;
+  align-items: center;
+  border-radius: 3px;
+  min-height: 24px;
+}
+
+
+.dt-leaf:hover {
+  background: #1a1a30;
+}
+
+.compact .dt-leaf{
+  /* grid-template-columns: 120px 100px; */
+}
+
+.dt-leaf.compact .dt-key-cell {
+  padding: 1px 8px 1px 4px;
+}
+
+.dt-key-cell {
+  padding: 1px 8px 1px 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #7eb6f5;
+  min-width: 400px;
+}
+
+.compact .dt-key-cell {
+  min-width: 100px;
+}
+
+.dt-val-cell {
+  padding: 1px 4px;
+  min-width: 0;
+}
+
+/* ---------- branch (nested object/array) ---------- */
+
+.dt-branch {
+  margin: 0 -4px;
+}
+
+.dt-toggle {
+  all: unset;
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: 0.5fr 1fr;
+  align-items: center;
+  width: 100%;
+  padding: 1px 4px;
+  border-radius: 3px;
+  min-height: 24px;
+  box-sizing: border-box;
+}
+
+.dt-toggle:hover {
+  background: #1e1e38;
+}
+
+.dt-toggle-key {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: #7eb6f5;
+  overflow: hidden;
+}
+
+.dt-arrow {
+  color: #555570;
+  font-size: 0.65rem;
+  flex-shrink: 0;
+  width: 10px;
+}
+
+/* Invisible spacer in leaf rows to match the arrow width + gap,
+   keeping key text aligned between branch and leaf rows. */
+.dt-arrow-spacer {
+  display: inline-block;
+  width: 10px;
+  flex-shrink: 0;
+  /* gap: 0.25rem is applied by .dt-toggle-key's flex gap;
+     the leaf key-cell is not flex so we add the gap as margin-right */
+  margin-right: 0.25rem;
+}
+
+.dt-key {
+  color: #7eb6f5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dt-type-hint {
+  color: #444460;
+  font-size: 0.75rem;
+  padding-left: 4px;
+}
+
+.dt-children {
+  /* No padding/margin — indentation is handled per-cell via depth-based paddingLeft
+     so the value column stays aligned across all nesting levels. */
+}
+
+/* ---------- value types ---------- */
+
+.dt-value {
+  all: unset;
+  cursor: pointer;
+  border-radius: 2px;
+  padding: 0 3px;
+}
+
+.dt-value:hover {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+
+.dt-value.dt-number  { color: #79c0ff; }
+.dt-value.dt-boolean { color: #f0883e; }
+.dt-value.dt-string  { color: #9ccc65; }
+.dt-value.dt-object  { color: #888; }
+
+/* ---------- inline editor ---------- */
+
+/* Runtime values: not editable, slightly dimmer */
+.dt-value[title=''] {
+  cursor: default;
+}
+
+.dt-type-hint {
+  color: #444460;
+  font-size: 0.75rem;
+}
+
+.dt-input {
+  background: #0d1117;
+  border: 1px solid #388bfd;
+  border-radius: 3px;
+  color: #e0e0e0;
+  font-family: inherit;
+  font-size: inherit;
+  padding: 0 4px;
+  outline: none;
+  min-width: 80px;
+  max-width: 260px;
+}
+
+/* Picker mode: hide values and show selection checkboxes */
+.data-tree.picker-mode .dt-leaf {
+  grid-template-columns: 1fr;
+}
+.data-tree.picker-mode .dt-val-cell {
+  display: none;
+}
+.data-tree .dt-key.selected {
+  background: rgba(91,158,245,0.12);
+  border-radius: 3px;
+}
+
+.data-tree .dt-branch.selected{
+  background: rgba(91, 158, 245, 0.12);
+  border-radius: 3px;
+}
+.data-tree .dt-leaf.selected{
+  background: rgba(91,158,245,0.12);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.dt-add.dt-checkbox {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+}
+.dt-add.dt-checkbox input {
+  width: 14px;
+  height: 14px;
+}

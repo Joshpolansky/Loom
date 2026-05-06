@@ -1,0 +1,126 @@
+{
+   "type": [
+      "object"
+   ],
+   "properties": {
+      "auto_start": {
+         "$ref": "#/$defs/bool"
+      },
+      "device_configs": {
+         "$ref": "#/$defs/std::vector<ethermouse::DevicePdoConfig>"
+      },
+      "interface": {
+         "$ref": "#/$defs/std::string"
+      },
+      "recover_on_lost_link": {
+         "$ref": "#/$defs/bool"
+      }
+   },
+   "additionalProperties": false,
+   "$defs": {
+      "bool": {
+         "type": [
+            "boolean"
+         ]
+      },
+      "ethermouse::DevicePdoConfig": {
+         "type": [
+            "object"
+         ],
+         "properties": {
+            "device_index": {
+               "$ref": "#/$defs/int32_t"
+            },
+            "rx_pdos": {
+               "$ref": "#/$defs/std::vector<ethermouse::PdoConfigMapping>"
+            },
+            "tx_pdos": {
+               "$ref": "#/$defs/std::vector<ethermouse::PdoConfigMapping>"
+            }
+         },
+         "additionalProperties": false
+      },
+      "ethermouse::PdoConfigEntry": {
+         "type": [
+            "object"
+         ],
+         "properties": {
+            "bit_length": {
+               "$ref": "#/$defs/uint16_t"
+            },
+            "index": {
+               "$ref": "#/$defs/uint16_t"
+            },
+            "subindex": {
+               "$ref": "#/$defs/uint8_t"
+            }
+         },
+         "additionalProperties": false
+      },
+      "ethermouse::PdoConfigMapping": {
+         "type": [
+            "object"
+         ],
+         "properties": {
+            "entries": {
+               "$ref": "#/$defs/std::vector<ethermouse::PdoConfigEntry>"
+            },
+            "pdo_index": {
+               "$ref": "#/$defs/uint16_t"
+            }
+         },
+         "additionalProperties": false
+      },
+      "int32_t": {
+         "type": [
+            "integer"
+         ],
+         "minimum": -2147483648,
+         "maximum": 2147483647
+      },
+      "std::string": {
+         "type": [
+            "string"
+         ]
+      },
+      "std::vector<ethermouse::DevicePdoConfig>": {
+         "type": [
+            "array"
+         ],
+         "items": {
+            "$ref": "#/$defs/ethermouse::DevicePdoConfig"
+         }
+      },
+      "std::vector<ethermouse::PdoConfigEntry>": {
+         "type": [
+            "array"
+         ],
+         "items": {
+            "$ref": "#/$defs/ethermouse::PdoConfigEntry"
+         }
+      },
+      "std::vector<ethermouse::PdoConfigMapping>": {
+         "type": [
+            "array"
+         ],
+         "items": {
+            "$ref": "#/$defs/ethermouse::PdoConfigMapping"
+         }
+      },
+      "uint16_t": {
+         "type": [
+            "integer"
+         ],
+         "minimum": 0,
+         "maximum": 65535
+      },
+      "uint8_t": {
+         "type": [
+            "integer"
+         ],
+         "minimum": 0,
+         "maximum": 255
+      }
+   },
+   "title": "EtherCatConfig"
+}

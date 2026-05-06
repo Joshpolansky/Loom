@@ -1,0 +1,6 @@
+{
+   "actuator_name": "Actuator_1",
+   "extend_time_ms": 500,
+   "retract_time_ms": 500,
+   "position_tolerance": 0.02
+}

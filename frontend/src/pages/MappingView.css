@@ -1,0 +1,343 @@
+/* MappingView.css - I/O Mapping Configuration UI */
+
+.mapping-page {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.mapping-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.mapping-header h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.mapping-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.mapping-add-button,
+.mapping-resolve-button {
+  background: none;
+  border: 1px solid #26324b;
+  color: #007bff;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.mapping-add-button:hover,
+.mapping-resolve-button:hover {
+  background: #26324b;
+}
+
+.mapping-list {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  gap: 1px;
+  flex: 1;
+}
+
+.mapping-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px;
+  border: 1px solid #141e2e;
+  transition: background 0.15s;
+}
+
+.mapping-row:first-child {
+  border-radius: 6px 6px 0 0;
+}
+
+.mapping-row:last-child {
+  border-radius: 0 0 6px 6px;
+}
+
+.mapping-row:last-child:first-child {
+  border-radius: 6px;
+}
+
+.mapping-row:hover {
+  background: #141e2e;
+}
+
+.mapping-content {
+  flex: 1;
+}
+
+.mapping-fields {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.mapping-field {
+  display: flex;
+  flex-direction: column;
+}
+
+.mapping-field-label {
+  font-size: 11px;
+  color: #999;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 2px;
+}
+
+.mapping-field-value {
+  font-family: 'Consolas', monospace;
+  font-size: 13px;
+  padding: 4px 8px;
+  background: #141e2e;
+  border-radius: 3px;
+  word-break: break-all;
+  max-width: 300px;
+}
+
+.mapping-source .mapping-field-value {
+  color: #66c2a5;
+}
+
+.mapping-target .mapping-field-value {
+  color: #fc8d62;
+}
+
+.mapping-arrow {
+  font-size: 18px;
+  color: #666;
+}
+
+.mapping-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.status-resolved {
+  background: rgba(102, 194, 165, 0.2);
+  color: #66c2a5;
+}
+
+.status-error {
+  background: rgba(240, 126, 126, 0.2);
+  color: #f07e7e;
+}
+
+.status-unknown {
+  background: rgba(153, 153, 153, 0.2);
+  color: #999;
+}
+
+.status-error {
+  color: #f07e7e;
+  margin-left: auto;
+}
+
+.mapping-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.mapping-toggle-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  color: #999;
+  transition: color 0.2s;
+}
+
+.mapping-toggle-button.enabled {
+  color: #66c2a5;
+}
+
+.mapping-toggle-button:hover {
+  opacity: 0.7;
+}
+
+.mapping-delete-button {
+  background: none;
+  border: none;
+  color: #b00020;
+  cursor: pointer;
+  font-size: 14px;
+  transition: opacity 0.2s;
+}
+
+.mapping-delete-button:hover {
+  opacity: 0.7;
+}
+
+.mapping-empty,
+.mapping-loading {
+  color: #666;
+  padding: 20px;
+  text-align: center;
+}
+
+.mapping-picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Picker Modal for Mappings */
+.mapping-picker-modal {
+  width: 1100px;
+  max-height: 85vh;
+  background: rgb(34, 37, 50);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.mapping-picker-header {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid #eee;
+}
+
+.mapping-picker-body {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  overflow: auto;
+  height: 65vh;
+}
+
+.mapping-picker-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-right: 1px solid #26324b;
+  padding-right: 12px;
+}
+
+.mapping-picker-column:last-child {
+  border-right: none;
+  padding-right: 0;
+}
+
+.mapping-picker-column-title {
+  font-weight: 600;
+  font-size: 14px;
+  padding: 4px 0;
+}
+
+.mapping-picker-section-selector {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.mapping-section-button {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid #26324b;
+  background: none;
+  color: #999;
+  cursor: pointer;
+  border-radius: 3px;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+
+.mapping-section-button.active {
+  background: #26324b;
+  color: #007bff;
+  border-color: #007bff;
+}
+
+.mapping-section-button:hover {
+  background: #141e2e;
+}
+
+.mapping-picker-modules {
+  width: 100%;
+  border: 1px solid #26324b;
+  border-radius: 3px;
+  overflow-y: auto;
+  max-height: 120px;
+  margin-bottom: 8px;
+}
+
+.mapping-picker-module-row {
+  padding: 6px 8px;
+  border-bottom: 1px solid #26324b;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+
+.mapping-picker-module-row:last-child {
+  border-bottom: none;
+}
+
+.mapping-picker-module-row:hover {
+  background: #141e2e;
+}
+
+.mapping-picker-module-row.active {
+  background: #26324b;
+  color: #007bff;
+  font-weight: 600;
+}
+
+.mapping-picker-tree-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #26324b;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.mapping-picker-tree {
+  overflow-y: auto;
+  flex: 1;
+  padding: 6px;
+  font-size: 12px;
+}
+
+.mapping-picker-empty {
+  color: #666;
+  padding: 12px;
+}
+
+.mapping-picker-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid #eee;
+}

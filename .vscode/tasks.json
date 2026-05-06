@@ -1,0 +1,13 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build",
+      "type": "shell",
+      "command": "cmake --build --preset conan-debug",
+      "group": "build",
+      "problemMatcher": ["$gcc"],
+      "detail": "Build CrunTime using CMake Tools preset"
+    }
+  ]
+}

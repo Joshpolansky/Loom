@@ -1,0 +1,24 @@
+{
+   "type": [
+      "object"
+   ],
+   "properties": {
+      "a": {
+         "$ref": "#/$defs/int32_t"
+      },
+      "x": {
+         "$ref": "#/$defs/int32_t"
+      }
+   },
+   "additionalProperties": false,
+   "$defs": {
+      "int32_t": {
+         "type": [
+            "integer"
+         ],
+         "minimum": -2147483648,
+         "maximum": 2147483647
+      }
+   },
+   "title": "Configuration"
+}

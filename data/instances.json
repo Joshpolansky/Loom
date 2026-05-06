@@ -1,0 +1,37 @@
+[
+   {
+      "id": "EtherCat",
+      "so": "ethercat",
+      "className": "EtherCat"
+   },
+   {
+      "id": "PneumaticActuator",
+      "so": "pneumatic_actuator",
+      "className": "PneumaticActuator"
+   },
+   {
+      "id": "ExampleMotor",
+      "so": "example_motor",
+      "className": "ExampleMotor"
+   },
+   {
+      "id": "oscilloscope",
+      "so": "oscilloscope",
+      "className": "oscilloscope"
+   },
+   {
+      "id": "ClassExample",
+      "so": "class_based",
+      "className": "ClassExample"
+   },
+   {
+      "id": "Sequencer",
+      "so": "sequencer",
+      "className": "Sequencer"
+   },
+   {
+      "id": "StackLight",
+      "so": "stack_light",
+      "className": "StackLight"
+   }
+]

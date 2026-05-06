@@ -1,0 +1,6 @@
+{
+   "interface": "en4",
+   "recover_on_lost_link": true,
+   "auto_start": true,
+   "device_configs": []
+}

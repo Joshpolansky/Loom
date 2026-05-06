@@ -1,0 +1,63 @@
+{
+   "classes": [
+      {
+         "name": "slow",
+         "period_us": 100000,
+         "cpu_affinity": -1,
+         "priority": 30,
+         "spin_us": 0
+      },
+      {
+         "name": "normal",
+         "period_us": 10000,
+         "cpu_affinity": -1,
+         "priority": 50,
+         "spin_us": 0
+      },
+      {
+         "name": "fast",
+         "period_us": 1000,
+         "cpu_affinity": 0,
+         "priority": 90,
+         "spin_us": 0
+      }
+   ],
+   "assignments": {
+      "ClassExample": {
+         "classId": "fast",
+         "order": 0,
+         "isolate": false
+      },
+      "Sequencer": {
+         "classId": "fast",
+         "order": 0,
+         "isolate": false
+      },
+      "PneumaticActuator": {
+         "classId": "fast",
+         "order": 0,
+         "isolate": false
+      },
+      "oscilloscope": {
+         "classId": "fast",
+         "order": 0,
+         "isolate": false
+      },
+      "EtherCat": {
+         "classId": "fast",
+         "order": 0,
+         "isolate": false
+      },
+      "ExampleMotor": {
+         "classId": "fast",
+         "order": 0,
+         "isolate": false
+      },
+      "StackLight": {
+         "classId": "fast",
+         "order": 0,
+         "isolate": false
+      }
+   },
+   "defaultClass": "normal"
+}

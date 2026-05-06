@@ -1,0 +1,7 @@
+{
+   "sequence_name": "MainSequence",
+   "motor_id": "ExampleMotor",
+   "clamp_id": "PneumaticActuator",
+   "light_id": "StackLight",
+   "step_timeout_ms": 5000
+}

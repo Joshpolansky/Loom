@@ -1,0 +1,35 @@
+{
+   "type": [
+      "object"
+   ],
+   "properties": {
+      "actuator_name": {
+         "$ref": "#/$defs/std::string"
+      },
+      "extend_time_ms": {
+         "$ref": "#/$defs/double"
+      },
+      "position_tolerance": {
+         "$ref": "#/$defs/double"
+      },
+      "retract_time_ms": {
+         "$ref": "#/$defs/double"
+      }
+   },
+   "additionalProperties": false,
+   "$defs": {
+      "double": {
+         "type": [
+            "number"
+         ],
+         "minimum": -1.7976931348623157E308,
+         "maximum": 1.7976931348623157E308
+      },
+      "std::string": {
+         "type": [
+            "string"
+         ]
+      }
+   },
+   "title": "PneumaticConfig"
+}

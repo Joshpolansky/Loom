@@ -1,0 +1,25 @@
+build/
+CMakeUserPresets.json
+.cache/
+compile_commands.json
+
+# cmake --install output (generated, not source)
+install/
+output/
+# Conan test_package build artifacts
+sdk/test_package/build/
+sdk/test_package/CMakeUserPresets.json
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/

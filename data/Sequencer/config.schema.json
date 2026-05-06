@@ -1,0 +1,38 @@
+{
+   "type": [
+      "object"
+   ],
+   "properties": {
+      "clamp_id": {
+         "$ref": "#/$defs/std::string"
+      },
+      "light_id": {
+         "$ref": "#/$defs/std::string"
+      },
+      "motor_id": {
+         "$ref": "#/$defs/std::string"
+      },
+      "sequence_name": {
+         "$ref": "#/$defs/std::string"
+      },
+      "step_timeout_ms": {
+         "$ref": "#/$defs/int32_t"
+      }
+   },
+   "additionalProperties": false,
+   "$defs": {
+      "int32_t": {
+         "type": [
+            "integer"
+         ],
+         "minimum": -2147483648,
+         "maximum": 2147483647
+      },
+      "std::string": {
+         "type": [
+            "string"
+         ]
+      }
+   },
+   "title": "SequencerConfig"
+}

@@ -1,0 +1,35 @@
+{
+  // Run and debug the CrunTime runtime.
+  //
+  // Prerequisites:
+  //   1. conan install . --build=missing
+  //   2. cmake --preset conan-debug
+  //   3. In CMake Tools, select "cruntime" as the launch target
+  //
+  // The `cruntime` executable is built from your own main.cpp (which calls
+  // crt::run()) and linked against crt::runtime from the cruntime-runtime
+  // Conan package. CMake Tools sees it as a native target — no hacks needed.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run CrunTime",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${command:cmake.launchTargetPath}",
+      "args": [
+        "--module-dir", "${workspaceFolder}/build/Debug/modules",
+        "--data-dir",   "${workspaceFolder}/data",
+        "--port",       "8080"
+      ],
+      "cwd": "${workspaceFolder}",
+      "MIMode": "lldb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    }
+  ]
+}

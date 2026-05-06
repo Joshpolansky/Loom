@@ -1,0 +1,138 @@
+.module-path {
+  font-family: monospace;
+  font-size: 0.9em;
+  color: var(--text-secondary);
+  max-width: 300px;
+
+  display: inline-block;        /* Must be block/inline-block to align */
+  text-align: right;    /* Aligns text to the right */
+  white-space: nowrap;  /* Keeps text on one line */
+  overflow: hidden;     /* Hides the overflow */
+  text-overflow: ellipsis;
+  direction: rtl;
+}
+
+.disk-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  margin-bottom: 0.5rem;
+}
+
+.recipe-name-input {
+  background: var(--bg-secondary, #1e1e2e);
+  color: var(--text-primary, #cdd6f4);
+  border: 1px solid var(--border, #45475a);
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.85rem;
+  width: 10rem;
+}
+
+.disk-msg {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #a6adc8);
+  margin-left: 0.25rem;
+}
+
+/* ---- Runtime split: live vars left, RPC right ---- */
+.runtime-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 340px);
+  gap: 1rem;
+  align-items: start;
+}
+
+.runtime-split > * {
+  min-width: 0;
+}
+
+/* ---- RPC Panel ---- */
+.rpc-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.rpc-list {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.rpc-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  border: 1px solid var(--border, #45475a);
+  cursor: pointer;
+  transition: background 0.1s;
+  white-space: nowrap;
+}
+
+.rpc-item:hover { background: rgba(255,255,255,0.05); }
+.rpc-item.selected { background: var(--accent-subtle, rgba(91,158,245,0.15)); border-color: rgba(91,158,245,0.5); }
+
+.rpc-name {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+
+.rpc-call {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.rpc-call-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.rpc-call-title {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--text-secondary, #a6adc8);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rpc-raw-input {
+  background: var(--bg-secondary, #1e1e2e);
+  color: var(--text-primary, #cdd6f4);
+  border: 1px solid var(--border, #45475a);
+  border-radius: 4px;
+  padding: 0.5rem;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  resize: vertical;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.rpc-result {
+  background: var(--bg-secondary, #1e1e2e);
+  border: 1px solid var(--border, #45475a);
+  border-radius: 4px;
+  padding: 0.75rem;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  margin: 0;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.rpc-empty {
+  color: var(--text-secondary, #a6adc8);
+  font-size: 0.85rem;
+  margin: 1rem 0;
+}
