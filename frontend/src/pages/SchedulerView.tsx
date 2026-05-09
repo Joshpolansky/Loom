@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { useDataService } from '../api/dataService';
 import { getSchedulerClasses, updateClassDef, reassignModuleClass, createClass } from '../api/rest';
 import { useClassesHistory } from '../api/useHistory';
 import type { ClassInfo } from '../types';
@@ -198,7 +197,7 @@ function NewClassForm({ onDone, onCancel }: { onDone: () => void; onCancel: () =
 
 // ─── SchedulerView ────────────────────────────────────────────────────────────
 export default function SchedulerView() {
-  const { liveClasses } = useDataService();
+  // const { liveClasses } = useDataService();
   const [classes, setClasses] = useState<ClassInfo[]>([]);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('');
