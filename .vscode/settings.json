@@ -15,7 +15,7 @@
     ],
     "args": [
       "--module-dir",
-      "${workspaceFolder}/build/modules",
+      "${workspaceFolder}/output/modules",
       "--data-dir",
       "${workspaceFolder}/data",
       "--port",
