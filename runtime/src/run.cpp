@@ -70,7 +70,7 @@ int run(int argc, char* argv[]) {
         return 1;
     }
 
-    spdlog::info("CrunTime starting");
+    spdlog::info("Loom starting");
     spdlog::info("Module directory: {}", moduleDir);
     spdlog::info("Data directory: {}", dataDir);
     spdlog::info("Default cycle period: {}ms", cycleMs);
@@ -87,7 +87,7 @@ int run(int argc, char* argv[]) {
     RuntimeCore core(runtimeCfg);
     core.loadModules();
 
-    spdlog::info("CrunTime running. Press Ctrl+C to stop.");
+    spdlog::info("Loom running. Press Ctrl+C to stop.");
 
     ServerConfig serverCfg;
     serverCfg.port = static_cast<uint16_t>(port);
@@ -103,7 +103,7 @@ int run(int argc, char* argv[]) {
     spdlog::info("Shutting down...");
     server.stop();
     core.shutdown();
-    spdlog::info("CrunTime shutdown complete.");
+    spdlog::info("Loom shutdown complete.");
     return 0;
 }
 

@@ -8,7 +8,7 @@ import './WatchView.css';
 
 type WatchEntry = { id: string; moduleId: string; path: string; label: string; expand?: boolean };
 
-const LS_KEY = 'cruntime:watch:list';
+const LS_KEY = 'loom:watch:list';
 
 function makeId() { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`; }
 

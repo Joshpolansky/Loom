@@ -67,7 +67,7 @@ function AppProviders() {
         <header className="app-header">
           <div className="app-logo">
             <div className="app-logo-icon">⚙</div>
-            <h1>CrunTime</h1>
+            <h1>Loom</h1>
           </div>
           <nav>
             <NavLink to="/"><IconModules /><span>Modules</span></NavLink>

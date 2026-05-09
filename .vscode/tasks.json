@@ -7,7 +7,7 @@
       "command": "cmake --build --preset conan-debug",
       "group": "build",
       "problemMatcher": ["$gcc"],
-      "detail": "Build CrunTime using CMake Tools preset"
+      "detail": "Build Loom using CMake Tools preset"
     }
   ]
 }

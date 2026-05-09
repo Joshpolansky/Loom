@@ -48,7 +48,7 @@ protected:
     void SetUp() override {
         // Use unique dir per test instance to avoid parallel test conflicts
         testDir = std::filesystem::temp_directory_path() /
-                  ("crt_test_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+                  ("loom_test_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         std::filesystem::remove_all(testDir);
 
         store = std::make_unique<loom::DataStore>(testDir);

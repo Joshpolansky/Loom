@@ -4,10 +4,10 @@
    ],
    "properties": {
       "assignments": {
-         "$ref": "#/$defs/std::unordered_map<std::string, crt::ModuleAssignment>"
+         "$ref": "#/$defs/std::unordered_map<std::string, loom::ModuleAssignment>"
       },
       "classes": {
-         "$ref": "#/$defs/std::vector<crt::ClassDef>"
+         "$ref": "#/$defs/std::vector<loom::ClassDef>"
       },
       "defaultClass": {
          "$ref": "#/$defs/std::string"
@@ -20,7 +20,7 @@
             "boolean"
          ]
       },
-      "crt::ClassDef": {
+      "loom::ClassDef": {
          "type": [
             "object"
          ],
@@ -43,7 +43,7 @@
          },
          "additionalProperties": false
       },
-      "crt::ModuleAssignment": {
+      "loom::ModuleAssignment": {
          "type": [
             "object"
          ],
@@ -72,22 +72,22 @@
             "string"
          ]
       },
-      "std::unordered_map<std::string, crt::ModuleAssignment>": {
+      "std::unordered_map<std::string, loom::ModuleAssignment>": {
          "type": [
             "object"
          ],
          "additionalProperties": {
-            "$ref": "#/$defs/crt::ModuleAssignment"
+            "$ref": "#/$defs/loom::ModuleAssignment"
          }
       },
-      "std::vector<crt::ClassDef>": {
+      "std::vector<loom::ClassDef>": {
          "type": [
             "array"
          ],
          "items": {
-            "$ref": "#/$defs/crt::ClassDef"
+            "$ref": "#/$defs/loom::ClassDef"
          }
       }
    },
-   "title": "crt::SchedulerConfig"
+   "title": "loom::SchedulerConfig"
 }

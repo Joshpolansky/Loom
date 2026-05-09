@@ -9,7 +9,7 @@
       "webRoot": "${workspaceFolder}/frontend/src/"
     },
     {
-      "name": "Debug CrunTime",
+      "name": "Debug Loom",
       "type": "cppdbg",
       "request": "launch",
       "program": "${command:cmake.launchTargetPath}",

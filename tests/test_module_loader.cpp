@@ -26,8 +26,8 @@ std::filesystem::path findExampleMotor() {
         if (std::filesystem::exists(p)) return p;
     }
 
-    // Try from CRUNTIME_MODULE_DIR env
-    if (auto* dir = std::getenv("CRUNTIME_MODULE_DIR")) {
+    // Try from LOOM_MODULE_DIR env
+    if (auto* dir = std::getenv("LOOM_MODULE_DIR")) {
         auto p = std::filesystem::path(dir) / "example_motor.so";
         if (std::filesystem::exists(p)) return p;
     }

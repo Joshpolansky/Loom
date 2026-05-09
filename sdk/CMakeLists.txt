@@ -40,7 +40,7 @@ target_compile_features(sdk INTERFACE cxx_std_23)
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
     DESTINATION include)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/include/loom/version.h
-    DESTINATION include/crt)
+    DESTINATION include/loom)
 
 install(TARGETS sdk
     EXPORT LoomSdkTargets

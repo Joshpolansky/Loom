@@ -48,7 +48,7 @@ interface SavedChart {
   windowSec: number;
 }
 
-const LS_KEY = 'cruntime:scope:charts';
+const LS_KEY = 'loom:scope:charts';
 
 function loadSavedCharts(): SavedChart[] {
   try {

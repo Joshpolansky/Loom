@@ -40,7 +40,7 @@ struct MotorConfig {
     int cycle_rate_ms = 100;
     double max_speed = 1000.0;       // RPM
     double max_acceleration = 500.0; // RPM/s
-    testClass2 test_obj; // Example of a non-POD config field that should be ignored by CrunTime
+    testClass2 test_obj; // Example of a non-POD config field that should be ignored by Loom
 };
 
 struct MotorRecipe {

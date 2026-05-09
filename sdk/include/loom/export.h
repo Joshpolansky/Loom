@@ -26,7 +26,7 @@
         return hdr;                                                           \
     }
 
-/// Register a module class with the CrunTime runtime.
+/// Register a module class with the Loom runtime.
 ///
 /// This macro generates the extern "C" factory functions that the runtime
 /// uses to create/destroy module instances and query metadata.

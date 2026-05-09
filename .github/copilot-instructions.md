@@ -97,7 +97,7 @@ just clean       # Clean build artifacts
 
 ### C++ Style
 - C++23 standard, no extensions
-- Namespace: `crt` for all runtime/SDK code
+- Namespace: `loom` for all runtime/SDK code
 - Header-only SDK in `sdk/include/loom/` (including Bus)
 - Module plugins use `extern "C"` exports (C ABI boundary)
 - Use aggregate structs for user data (enables glaze auto-reflection)

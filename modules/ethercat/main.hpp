@@ -55,7 +55,7 @@ public:
 
     // Bring all devices to OP without starting the internal cyclic thread.
     // The caller is responsible for driving tick_send()/tick_receive() each
-    // cycle (e.g. from CrunTime preCyclic/postCyclic hooks).
+    // cycle (e.g. from Loom preCyclic/postCyclic hooks).
     void start_manual();
 
     // Request a clean stop: bring devices to Init, join thread (if running).

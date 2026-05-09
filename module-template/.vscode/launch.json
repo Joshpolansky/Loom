@@ -1,18 +1,18 @@
 {
-  // Run and debug the CrunTime runtime.
+  // Run and debug the Loom runtime.
   //
   // Prerequisites:
   //   1. conan install . --build=missing
   //   2. cmake --preset conan-debug
-  //   3. In CMake Tools, select "cruntime" as the launch target
+  //   3. In CMake Tools, select "loom" as the launch target
   //
-  // The `cruntime` executable is built from your own main.cpp (which calls
-  // crt::run()) and linked against crt::runtime from the cruntime-runtime
+  // The `loom` executable is built from your own main.cpp (which calls
+  // loom::run()) and linked against loom::runtime from the loom-runtime
   // Conan package. CMake Tools sees it as a native target — no hacks needed.
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run CrunTime",
+      "name": "Run Loom",
       "type": "cppdbg",
       "request": "launch",
       "program": "${command:cmake.launchTargetPath}",
