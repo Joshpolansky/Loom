@@ -1,0 +1,154 @@
+name: Release
+
+# Push a tag like v0.1.0 to cut a release. The matrix below builds Loom
+# in Release mode on each platform, packages the binary + example
+# modules into a tarball named loom-<platform>-<arch>.tar.gz (which
+# matches LoomUI's default release-asset template), and attaches them
+# to the GitHub release.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name to use for the release (e.g. v0.1.0). The tag must already exist.'
+        required: true
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform_name }})
+    runs-on: ${{ matrix.os }}
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      ASSET_BASENAME: loom-${{ matrix.platform_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest      # Apple Silicon runners are now default
+            platform_name: darwin-arm64
+          - os: macos-13          # Last Intel macOS image still available
+            platform_name: darwin-x64
+          - os: ubuntu-latest
+            platform_name: linux-x64
+          # Add when ready:
+          # - os: ubuntu-22.04-arm
+          #   platform_name: linux-arm64
+          - os: windows-latest
+            platform_name: win32-x64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: .github/workflows/release.yml
+
+      - name: Set up MSVC developer command prompt
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: ${{ matrix.platform_name }}-conan-release-${{ hashFiles('conanfile.py', 'conan/profiles/release', 'sdk/conanfile.py', 'runtime/conanfile.py', 'VERSION') }}
+          restore-keys: |
+            ${{ matrix.platform_name }}-conan-release-
+
+      - name: Install Conan
+        run: python -m pip install --upgrade pip conan
+
+      - name: Detect Conan profile
+        run: conan profile detect --force
+
+      - name: Install Conan dependencies (Release)
+        run: conan install . --output-folder=build/Release --build=missing --profile=conan/profiles/release
+
+      - name: Configure CMake (Release)
+        run: cmake --preset conan-release
+
+      - name: Build (Release)
+        run: cmake --build --preset conan-release
+
+      - name: Stage release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="dist/${ASSET_BASENAME}"
+          mkdir -p "${STAGE}/modules"
+
+          # Find the loom binary. CMake names it loom.exe on Windows, loom
+          # everywhere else.
+          if [ -f "output/loom" ]; then
+            cp "output/loom" "${STAGE}/loom"
+          elif [ -f "output/loom.exe" ]; then
+            cp "output/loom.exe" "${STAGE}/loom.exe"
+          else
+            echo "::error::Loom binary not produced by build" >&2
+            ls -la output/ || true
+            exit 1
+          fi
+
+          # Copy module plugins. LOOM_MODULE_SUFFIX is .so on POSIX and
+          # .dll on Windows; nullglob keeps the loop quiet on a platform
+          # that doesn't produce a given suffix.
+          if [ -d output/modules ]; then
+            shopt -s nullglob
+            for mod in output/modules/*.so output/modules/*.dylib output/modules/*.dll; do
+              cp "$mod" "${STAGE}/modules/"
+            done
+          fi
+
+          # Drop in companion files so a tarball is informative on its own.
+          for f in README.md LICENSE VERSION CHANGELOG.md; do
+            [ -f "$f" ] && cp "$f" "${STAGE}/" || true
+          done
+
+          tar -czf "dist/${ASSET_BASENAME}.tar.gz" -C dist "${ASSET_BASENAME}"
+          ls -lh dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET_BASENAME }}
+          path: dist/${{ env.ASSET_BASENAME }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Show staged assets
+        run: ls -lh dist/
+
+      - name: Create / update GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: dist/loom-*.tar.gz
+          generate_release_notes: true
+          fail_on_unmatched_files: true
