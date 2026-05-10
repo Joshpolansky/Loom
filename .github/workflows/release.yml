@@ -74,6 +74,31 @@ jobs:
       - name: Build (Release)
         run: cmake --build --preset conan-release
 
+      - name: CMake install (SDK headers + cmake config) into staging prefix
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf install
+          cmake --install build/Release --prefix install
+
+      - name: Bundle glaze headers from Conan cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Glaze is a header-only Conan dep. Locate its include dir in the
+          # Conan cache so we can ship it alongside the loom SDK headers,
+          # making the install self-contained for module developers.
+          GLAZE_HPP=$(find "$CONAN_HOME" -type f -path '*/include/glaze/glaze.hpp' 2>/dev/null | head -n 1)
+          if [ -z "$GLAZE_HPP" ]; then
+            echo "::error::could not locate glaze headers in Conan cache" >&2
+            find "$CONAN_HOME" -type d -name glaze 2>/dev/null | head || true
+            exit 1
+          fi
+          GLAZE_INC_ROOT=$(dirname "$(dirname "$GLAZE_HPP")")
+          echo "found glaze include root: $GLAZE_INC_ROOT"
+          mkdir -p install/include
+          cp -r "$GLAZE_INC_ROOT/glaze" install/include/
+
       - name: Stage release artifacts
         shell: bash
         run: |
@@ -81,26 +106,41 @@ jobs:
           STAGE="dist/${ASSET_BASENAME}"
           mkdir -p "${STAGE}/modules"
 
-          # Find the loom binary. CMake names it loom.exe on Windows, loom
-          # everywhere else.
-          if [ -f "output/loom" ]; then
+          # Binary: CMakeLists installs to install/bin/. The build also
+          # leaves it under output/ — prefer the install one since it's
+          # the canonical install path.
+          if [ -f "install/bin/loom" ]; then
+            cp "install/bin/loom" "${STAGE}/loom"
+          elif [ -f "install/bin/loom.exe" ]; then
+            cp "install/bin/loom.exe" "${STAGE}/loom.exe"
+          elif [ -f "output/loom" ]; then
             cp "output/loom" "${STAGE}/loom"
           elif [ -f "output/loom.exe" ]; then
             cp "output/loom.exe" "${STAGE}/loom.exe"
           else
             echo "::error::Loom binary not produced by build" >&2
-            ls -la output/ || true
+            ls -la install/bin output/ 2>/dev/null || true
             exit 1
           fi
 
-          # Copy module plugins. LOOM_MODULE_SUFFIX is .so on POSIX and
-          # .dll on Windows; nullglob keeps the loop quiet on a platform
-          # that doesn't produce a given suffix.
+          # Module plugins live under output/modules/ — there are no install
+          # rules for them since they're loaded at runtime via dlopen.
           if [ -d output/modules ]; then
             shopt -s nullglob
             for mod in output/modules/*.so output/modules/*.dylib output/modules/*.dll; do
               cp "$mod" "${STAGE}/modules/"
             done
+          fi
+
+          # SDK headers + cmake config + bundled glaze headers, so module
+          # developers can `find_package(loom CONFIG REQUIRED)` against the
+          # extracted tarball without needing Conan or a separate glaze
+          # install.
+          if [ -d install/include ]; then
+            cp -r install/include "${STAGE}/include"
+          fi
+          if [ -d install/lib ]; then
+            cp -r install/lib "${STAGE}/lib"
           fi
 
           # Drop in companion files so a tarball is informative on its own.

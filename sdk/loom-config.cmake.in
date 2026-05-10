@@ -1,5 +1,20 @@
 @PACKAGE_INIT@
 
+# When this loom install was produced by the binary release workflow, glaze
+# headers are bundled under ${PACKAGE_PREFIX_DIR}/include alongside the loom
+# headers. Provide glaze::glaze as an IMPORTED target here so a vanilla
+# `find_package(loom CONFIG REQUIRED)` works for module developers without
+# them needing to install glaze separately.
+#
+# If the consumer already has glaze::glaze (e.g. via Conan's CMakeDeps or
+# their own find_package(glaze)), this block is a no-op.
+if(NOT TARGET glaze::glaze)
+    add_library(glaze::glaze INTERFACE IMPORTED)
+    set_target_properties(glaze::glaze PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/include"
+    )
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/LoomSdkTargets.cmake")
 
 if(NOT TARGET loom::sdk)
