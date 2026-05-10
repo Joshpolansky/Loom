@@ -29,13 +29,8 @@ jobs:
         include:
           - os: macos-latest      # Apple Silicon runners are now default
             platform_name: darwin-arm64
-          - os: macos-13          # Last Intel macOS image still available
-            platform_name: darwin-x64
           - os: ubuntu-latest
             platform_name: linux-x64
-          # Add when ready:
-          # - os: ubuntu-22.04-arm
-          #   platform_name: linux-arm64
           - os: windows-latest
             platform_name: win32-x64
 
