@@ -1,5 +1,6 @@
 #include "loom/runtime_core.h"
 #include "loom/server.h"
+#include "loom/version.h"
 
 #include <spdlog/spdlog.h>
 
@@ -28,7 +29,9 @@ namespace {
                   << "  --data-dir <path>    Directory for config/recipe persistence (default: ./data)\n"
                   << "  --cycle-ms <ms>      Default cycle period in milliseconds (default: 100)\n"
                   << "  --port <port>        HTTP/WebSocket server port (default: 8080)\n"
-                  << "  --bind <addr>        Bind address (default: 127.0.0.1, use 0.0.0.0 for all interfaces)\n";
+                  << "  --bind <addr>        Bind address (default: 127.0.0.1, use 0.0.0.0 for all interfaces)\n"
+                  << "  --version            Print version and exit\n"
+                  << "  --help, -h           Show this help and exit\n";
     }
 } // namespace
 
@@ -54,6 +57,9 @@ int run(int argc, char* argv[]) {
             port = std::stoi(argv[++i]);
         } else if (arg == "--bind" && i + 1 < argc) {
             bindAddress = argv[++i];
+        } else if (arg == "--version") {
+            std::cout << "loom " << kSdkVersion << "\n";
+            return 0;
         } else if (arg == "--help" || arg == "-h") {
             printUsage(argv[0]);
             return 0;
