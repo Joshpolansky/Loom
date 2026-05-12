@@ -1,10 +1,10 @@
 name: Release
 
 # Push a tag like v0.1.0 to cut a release. The matrix below builds Loom
-# in Release mode on each platform, packages the binary + example
-# modules into a tarball named loom-<platform>-<arch>.tar.gz (which
-# matches LoomUI's default release-asset template), and attaches them
-# to the GitHub release.
+# on each platform. macOS and Linux only need a Release build (no CRT ABI
+# split). Windows produces two assets:
+#   loom-win32-x64.tar.gz        ← Release runtime (matches LoomUI default)
+#   loom-win32-x64-debug.tar.gz  ← Debug runtime   (matches LoomUI releaseAssetTemplateDebug)
 
 on:
   push:
@@ -29,10 +29,28 @@ jobs:
         include:
           - os: macos-latest      # Apple Silicon runners are now default
             platform_name: darwin-arm64
+            build_type: Release
+            conan_profile: release
+            cmake_preset_cfg: release
+            asset_suffix: ''
           - os: ubuntu-latest
             platform_name: linux-x64
+            build_type: Release
+            conan_profile: release
+            cmake_preset_cfg: release
+            asset_suffix: ''
           - os: windows-latest
             platform_name: win32-x64
+            build_type: Release
+            conan_profile: release
+            cmake_preset_cfg: release
+            asset_suffix: ''
+          - os: windows-latest
+            platform_name: win32-x64
+            build_type: Debug
+            conan_profile: debug
+            cmake_preset_cfg: debug
+            asset_suffix: '-debug'
 
     steps:
       - name: Check out repository
@@ -55,9 +73,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CONAN_HOME }}
-          key: ${{ matrix.platform_name }}-conan-release-${{ hashFiles('conanfile.py', 'conan/profiles/release', 'sdk/conanfile.py', 'runtime/conanfile.py', 'VERSION') }}
+          key: ${{ matrix.platform_name }}-conan-${{ matrix.conan_profile }}-${{ hashFiles('conanfile.py', format('conan/profiles/{0}', matrix.conan_profile), 'sdk/conanfile.py', 'runtime/conanfile.py', 'VERSION') }}
           restore-keys: |
-            ${{ matrix.platform_name }}-conan-release-
+            ${{ matrix.platform_name }}-conan-${{ matrix.conan_profile }}-
 
       - name: Install Conan
         run: python -m pip install --upgrade pip conan
@@ -65,21 +83,21 @@ jobs:
       - name: Detect Conan profile
         run: conan profile detect --force
 
-      - name: Install Conan dependencies (Release)
-        run: conan install . --output-folder=build/Release --build=missing --profile=conan/profiles/release
+      - name: Install Conan dependencies
+        run: conan install . --output-folder=build/${{ matrix.build_type }} --build=missing --profile=conan/profiles/${{ matrix.conan_profile }}
 
-      - name: Configure CMake (Release)
-        run: cmake --preset conan-release
+      - name: Configure CMake
+        run: cmake --preset conan-${{ matrix.cmake_preset_cfg }}
 
-      - name: Build (Release)
-        run: cmake --build --preset conan-release
+      - name: Build
+        run: cmake --build --preset conan-${{ matrix.cmake_preset_cfg }}
 
       - name: CMake install (SDK headers + cmake config) into staging prefix
         shell: bash
         run: |
           set -euo pipefail
           rm -rf install
-          cmake --install build/Release --prefix install
+          cmake --install build/${{ matrix.build_type }} --prefix install
 
       - name: Bundle glaze headers from Conan cache
         shell: bash
@@ -103,7 +121,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          STAGE="dist/${ASSET_BASENAME}"
+          STAGE="dist/${ASSET_BASENAME}${{ matrix.asset_suffix }}"
           mkdir -p "${STAGE}/modules"
 
           # Binary: CMakeLists installs to install/bin/. The build also
@@ -123,11 +141,19 @@ jobs:
             exit 1
           fi
 
-          # Module plugins live under output/modules/ — there are no install
-          # rules for them since they're loaded at runtime via dlopen.
-          if [ -d output/modules ]; then
+          # Module plugins. On Windows they are under output/modules/<Config>
+          # (Debug or Release). On other platforms they are flat in output/modules.
+          BUILD_TYPE="${{ matrix.build_type }}"
+          if [ -d "output/modules/${BUILD_TYPE}" ]; then
+            MOD_DIR="output/modules/${BUILD_TYPE}"
+          elif [ -d "output/modules" ]; then
+            MOD_DIR="output/modules"
+          else
+            MOD_DIR=""
+          fi
+          if [ -n "${MOD_DIR}" ]; then
             shopt -s nullglob
-            for mod in output/modules/*.so output/modules/*.dylib output/modules/*.dll; do
+            for mod in "${MOD_DIR}"/*.so "${MOD_DIR}"/*.dylib "${MOD_DIR}"/*.dll; do
               cp "$mod" "${STAGE}/modules/"
             done
           fi
@@ -148,14 +174,14 @@ jobs:
             [ -f "$f" ] && cp "$f" "${STAGE}/" || true
           done
 
-          tar -czf "dist/${ASSET_BASENAME}.tar.gz" -C dist "${ASSET_BASENAME}"
+          tar -czf "dist/${ASSET_BASENAME}${{ matrix.asset_suffix }}.tar.gz" -C dist "${ASSET_BASENAME}${{ matrix.asset_suffix }}"
           ls -lh dist/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ASSET_BASENAME }}
-          path: dist/${{ env.ASSET_BASENAME }}.tar.gz
+          name: ${{ env.ASSET_BASENAME }}${{ matrix.asset_suffix }}
+          path: dist/${{ env.ASSET_BASENAME }}${{ matrix.asset_suffix }}.tar.gz
           if-no-files-found: error
           retention-days: 7
 
