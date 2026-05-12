@@ -7,7 +7,16 @@
 namespace loom {
 
 /// API version for ABI compatibility checks between runtime and modules.
-inline constexpr uint32_t kApiVersion = 1;
+///
+/// Bump on any change to the ModuleHeader layout or to the exported
+/// loom_module_create / loom_module_destroy contract. Modules whose
+/// `hdr->api_version` doesn't match are rejected before the runtime
+/// reads any header fields, so introducing a new trailing field is
+/// safe — a module built against the older header will be rejected
+/// rather than have its header read past the end.
+///
+/// v1 → v2: added ModuleHeader::source_file.
+inline constexpr uint32_t kApiVersion = 2;
 
 /// Describes a loaded module to the runtime.
 struct ModuleHeader {
@@ -17,6 +26,9 @@ struct ModuleHeader {
     /// SDK version string baked in at module compile time (from VERSION file).
     /// The runtime rejects modules whose sdk_version differs from its own.
     const char* sdk_version = kSdkVersion;
+    /// Source file the LOOM_MODULE_HEADER macro was invoked from (__FILE__).
+    /// Lets tooling jump to source. Null for modules built before this field.
+    const char* source_file = nullptr;
 };
 
 /// Current state of a module in the runtime lifecycle.

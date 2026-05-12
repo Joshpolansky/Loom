@@ -136,10 +136,16 @@ std::vector<std::string> RuntimeCore::loadModules() {
         return ids;
     }
 
-    // First boot — scan directory, then write instances.json.
+    // First boot — scan each configured module directory, primary first
+    // then any additional read-only ones (e.g. the system examples dir
+    // shipped in the Loom release).
     auto ids = loader_.loadDirectory(config_.moduleDir);
+    for (const auto& extra : config_.additionalModuleDirs) {
+        auto more = loader_.loadDirectory(extra);
+        ids.insert(ids.end(), more.begin(), more.end());
+    }
     if (ids.empty()) {
-        spdlog::warn("No modules found in {}", config_.moduleDir.string());
+        spdlog::warn("No modules found in {} or any additional module dir", config_.moduleDir.string());
         return ids;
     }
 
@@ -335,10 +341,41 @@ void RuntimeCore::saveInstanceManifest() {
 
 std::string RuntimeCore::instantiateModule(const std::string& soFilename,
                                             const std::string& instanceId) {
-    auto soPath = config_.moduleDir / normalizeModuleFilename(soFilename);
-    if (!std::filesystem::exists(soPath)) {
-        spdlog::error("instantiateModule: '{}' not found in module directory", soFilename);
+    auto normalized = normalizeModuleFilename(soFilename);
+
+    // Path-traversal guard. `soFilename` arrives over HTTP; reject anything
+    // that isn't a plain filename so that joining with moduleDir can't
+    // escape into the rest of the filesystem (absolute paths replace the
+    // base when joined; "..", separators, drive specs, etc. would let a
+    // caller dlopen arbitrary shared libraries).
+    std::filesystem::path nPath(normalized);
+    if (normalized.empty()
+        || nPath.is_absolute()
+        || nPath.has_parent_path()
+        || nPath != nPath.filename()) {
+        spdlog::error("instantiateModule: rejecting non-filename '{}' (must be a bare .so/.dylib/.dll name)",
+                      soFilename);
         return {};
+    }
+
+    std::filesystem::path soPath = config_.moduleDir / normalized;
+    if (!std::filesystem::exists(soPath)) {
+        // Fall back to any additional read-only module dirs (system examples
+        // shipped in the install, etc.). The .so is loaded from wherever
+        // it's found — no copy.
+        bool found = false;
+        for (const auto& extra : config_.additionalModuleDirs) {
+            auto candidate = extra / normalized;
+            if (std::filesystem::exists(candidate)) {
+                soPath = candidate;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            spdlog::error("instantiateModule: '{}' not found in any module directory", soFilename);
+            return {};
+        }
     }
 
     std::unique_lock<std::shared_mutex> lock(moduleMutex_);

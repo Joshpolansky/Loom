@@ -19,7 +19,8 @@
     static loom::ModuleHeader moduleHeader() {                                 \
         return {.api_version = loom::kApiVersion,                              \
                 .name = (name_), .version = (version_),                       \
-                .sdk_version = loom::kSdkVersion};                             \
+                .sdk_version = loom::kSdkVersion,                              \
+                .source_file = __FILE__};                                     \
     }                                                                         \
     const loom::ModuleHeader& header() const override {                        \
         static const auto hdr = moduleHeader();                               \

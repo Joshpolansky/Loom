@@ -23,7 +23,15 @@ namespace loom {
 
 /// Configuration for the RuntimeCore.
 struct RuntimeConfig {
+    /// Primary module directory — writable, watched for hot-reload, and
+    /// the target for /api/modules/upload + new instance copies. Pass
+    /// the user's workspace output dir here when running under LoomUI.
     std::filesystem::path moduleDir;
+    /// Additional read-only module directories searched after moduleDir
+    /// when loading on startup, listing /api/modules/available, and
+    /// resolving a .so filename for instantiate. Pass the install's
+    /// bundled examples directory here for the typical workflow.
+    std::vector<std::filesystem::path> additionalModuleDirs;
     std::filesystem::path dataDir         = "./data";
     std::chrono::milliseconds defaultCyclePeriod{100};
 };

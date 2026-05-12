@@ -180,7 +180,13 @@ std::string ModuleLoader::load(const std::filesystem::path& soPath,
     // fall back to header.name for backwards-compatible single-instance loads.
     std::string id = instanceId.empty() ? std::string(hdr->name) : instanceId;
     if (modules_.contains(id)) {
-        spdlog::error("Module instance '{}' already loaded (class: {})", id, hdr->name);
+        // Demoted from error: with multiple --module-dir paths in play, the
+        // same module showing up in a secondary (read-only) dir is the
+        // expected, primary-wins outcome rather than a failure. Callers
+        // still get an empty return so explicit duplicate loads (re-upload
+        // of an already-loaded instance) fail at the API boundary.
+        spdlog::info("Module instance '{}' already loaded (class: {}); skipping {}",
+                     id, hdr->name, loadPath.string());
         destroyFn(rawInstance);
         dynlib::close(handle);
 #if defined(_WIN32)
@@ -190,8 +196,9 @@ std::string ModuleLoader::load(const std::filesystem::path& soPath,
     }
 
     // Keep ownership of string fields (ModuleHeader stores const char*).
-    std::string classNameStr   = hdr->name    ? hdr->name    : "";
-    std::string versionStr     = hdr->version ? hdr->version : "";
+    std::string classNameStr   = hdr->name        ? hdr->name        : "";
+    std::string versionStr     = hdr->version     ? hdr->version     : "";
+    std::string sourceFileStr  = hdr->source_file ? hdr->source_file : "";
 
     LoadedModule mod;
     mod.id        = id;
@@ -200,10 +207,11 @@ std::string ModuleLoader::load(const std::filesystem::path& soPath,
 #if defined(_WIN32)
     mod.shadowPath = loadPath;
 #endif
-    mod.handle     = handle;
-    mod.header     = *hdr;
-    mod.nameStr    = classNameStr;
-    mod.versionStr = versionStr;
+    mod.handle        = handle;
+    mod.header        = *hdr;
+    mod.nameStr       = classNameStr;
+    mod.versionStr    = versionStr;
+    mod.sourceFileStr = sourceFileStr;
     mod.instance = std::unique_ptr<IModule, std::function<void(IModule*)>>(
         rawInstance, destroyFn);
     mod.state = ModuleState::Loaded;
