@@ -18,6 +18,27 @@ std::filesystem::path normalizeModuleFilename(std::string_view name) {
     return p;
 }
 
+// Resolve a module filename against the configured module directories.
+// Returns empty path when no matching file exists.
+std::filesystem::path resolveModulePath(const RuntimeConfig& config,
+                                        const std::filesystem::path& moduleFile) {
+    auto normalized = normalizeModuleFilename(moduleFile.string());
+
+    auto primary = config.moduleDir / normalized;
+    if (std::filesystem::exists(primary)) {
+        return primary;
+    }
+
+    for (const auto& extra : config.additionalModuleDirs) {
+        auto candidate = extra / normalized;
+        if (std::filesystem::exists(candidate)) {
+            return candidate;
+        }
+    }
+
+    return {};
+}
+
 } // namespace
 
 RuntimeCore::RuntimeCore(const RuntimeConfig& config)
@@ -116,8 +137,11 @@ std::vector<std::string> RuntimeCore::loadModules() {
         spdlog::info("Loading {} instance(s) from instances.json", entries.size());
         std::vector<std::string> ids;
         for (auto& e : entries) {
-            auto soFile = normalizeModuleFilename(e.so);
-            auto soPath = config_.moduleDir / soFile;
+            auto soPath = resolveModulePath(config_, e.so);
+            if (soPath.empty()) {
+                spdlog::error("loadModules: '{}' not found in any module directory", e.so);
+                continue;
+            }
             auto id = loader_.load(soPath, e.id);
             if (id.empty()) {
                 spdlog::error("loadModules: failed to load instance '{}' from '{}'", e.id, e.so);

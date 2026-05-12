@@ -1239,6 +1239,7 @@ void Server::start() {
                 if (pos == std::string::npos) return {};
                 ++pos;
                 while (pos < req.body.size() && req.body[pos] == ' ') ++pos;
+                if (pos >= req.body.size()) return {};
                 if (req.body[pos] == '"') {
                     ++pos;
                     auto end = req.body.find('"', pos);
@@ -1249,7 +1250,7 @@ void Server::start() {
             };
 
             moduleId = extract("moduleId");
-            newClass  = extract("class");
+            newClass = extract("class");
             auto orderStr = extract("order");
 
             if (moduleId.empty() || newClass.empty()) {
