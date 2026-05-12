@@ -190,8 +190,9 @@ std::string ModuleLoader::load(const std::filesystem::path& soPath,
     }
 
     // Keep ownership of string fields (ModuleHeader stores const char*).
-    std::string classNameStr   = hdr->name    ? hdr->name    : "";
-    std::string versionStr     = hdr->version ? hdr->version : "";
+    std::string classNameStr   = hdr->name        ? hdr->name        : "";
+    std::string versionStr     = hdr->version     ? hdr->version     : "";
+    std::string sourceFileStr  = hdr->source_file ? hdr->source_file : "";
 
     LoadedModule mod;
     mod.id        = id;
@@ -200,10 +201,11 @@ std::string ModuleLoader::load(const std::filesystem::path& soPath,
 #if defined(_WIN32)
     mod.shadowPath = loadPath;
 #endif
-    mod.handle     = handle;
-    mod.header     = *hdr;
-    mod.nameStr    = classNameStr;
-    mod.versionStr = versionStr;
+    mod.handle        = handle;
+    mod.header        = *hdr;
+    mod.nameStr       = classNameStr;
+    mod.versionStr    = versionStr;
+    mod.sourceFileStr = sourceFileStr;
     mod.instance = std::unique_ptr<IModule, std::function<void(IModule*)>>(
         rawInstance, destroyFn);
     mod.state = ModuleState::Loaded;

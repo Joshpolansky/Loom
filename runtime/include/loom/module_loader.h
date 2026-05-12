@@ -23,6 +23,7 @@ struct LoadedModule {
     ModuleHeader header{};                 // Cached module header (const char* valid only while .so is loaded)
     std::string nameStr;                   // Owned copy of header.name — safe after dlclose
     std::string versionStr;               // Owned copy of header.version — safe after dlclose
+    std::string sourceFileStr;            // Owned copy of header.source_file — empty if module predates this field
     std::unique_ptr<IModule, std::function<void(IModule*)>> instance; // Module instance with custom deleter
     ModuleState state = ModuleState::Unloaded;
 };

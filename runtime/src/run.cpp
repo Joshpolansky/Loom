@@ -10,6 +10,7 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace loom {
 
@@ -22,10 +23,13 @@ namespace {
     }
 
     void printUsage(const char* argv0) {
-        std::cerr << "Usage: " << argv0 << " --module-dir <path> [--data-dir <path>] [--cycle-ms <ms>] [--port <port>] [--bind <addr>]\n"
+        std::cerr << "Usage: " << argv0 << " --module-dir <path> [--module-dir <path> ...] [--data-dir <path>] [--cycle-ms <ms>] [--port <port>] [--bind <addr>]\n"
                   << "\n"
                   << "Options:\n"
-                  << "  --module-dir <path>  Directory containing .so/.dylib module files (required)\n"
+                  << "  --module-dir <path>  Directory containing .so/.dylib module files. Repeatable;\n"
+                  << "                       modules are loaded from all dirs. The FIRST is the\n"
+                  << "                       writable/watched dir (uploads land there, edits to it\n"
+                  << "                       trigger hot-reload). Subsequent dirs are read-only.\n"
                   << "  --data-dir <path>    Directory for config/recipe persistence (default: ./data)\n"
                   << "  --cycle-ms <ms>      Default cycle period in milliseconds (default: 100)\n"
                   << "  --port <port>        HTTP/WebSocket server port (default: 8080)\n"
@@ -39,7 +43,7 @@ int run(int argc, char* argv[]) {
     spdlog::set_level(spdlog::level::info);
     spdlog::set_pattern("[%H:%M:%S.%e] [%^%l%$] %v");
 
-    std::string moduleDir;
+    std::vector<std::string> moduleDirs;
     std::string dataDir = "./data";
     std::string bindAddress = "127.0.0.1";
     int cycleMs = 100;
@@ -48,7 +52,7 @@ int run(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--module-dir" && i + 1 < argc) {
-            moduleDir = argv[++i];
+            moduleDirs.emplace_back(argv[++i]);
         } else if (arg == "--data-dir" && i + 1 < argc) {
             dataDir = argv[++i];
         } else if (arg == "--cycle-ms" && i + 1 < argc) {
@@ -70,14 +74,17 @@ int run(int argc, char* argv[]) {
         }
     }
 
-    if (moduleDir.empty()) {
-        std::cerr << "Error: --module-dir is required\n";
+    if (moduleDirs.empty()) {
+        std::cerr << "Error: at least one --module-dir is required\n";
         printUsage(argv[0]);
         return 1;
     }
 
     spdlog::info("Loom starting");
-    spdlog::info("Module directory: {}", moduleDir);
+    spdlog::info("Primary module directory (writable, watched): {}", moduleDirs.front());
+    for (size_t i = 1; i < moduleDirs.size(); ++i) {
+        spdlog::info("Additional module directory (read-only): {}", moduleDirs[i]);
+    }
     spdlog::info("Data directory: {}", dataDir);
     spdlog::info("Default cycle period: {}ms", cycleMs);
     spdlog::info("Server port: {}", port);
@@ -87,7 +94,10 @@ int run(int argc, char* argv[]) {
     std::signal(SIGTERM, signalHandler);
 
     RuntimeConfig runtimeCfg;
-    runtimeCfg.moduleDir           = moduleDir;
+    runtimeCfg.moduleDir = moduleDirs.front();
+    for (size_t i = 1; i < moduleDirs.size(); ++i) {
+        runtimeCfg.additionalModuleDirs.emplace_back(moduleDirs[i]);
+    }
     runtimeCfg.dataDir             = dataDir;
     runtimeCfg.defaultCyclePeriod  = std::chrono::milliseconds(cycleMs);
     RuntimeCore core(runtimeCfg);

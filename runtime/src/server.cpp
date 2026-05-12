@@ -253,6 +253,9 @@ static std::string moduleInfoJson(const LoadedModule& mod, const Scheduler& sche
     json += ",\"version\":\"" + mod.versionStr + "\"";
     json += ",\"state\":" + std::to_string(static_cast<int>(mod.state));
     json += ",\"path\":\"" + jsonEscapeString(mod.path.string()) + "\"";
+    if (!mod.sourceFileStr.empty()) {
+        json += ",\"sourceFile\":\"" + jsonEscapeString(mod.sourceFileStr) + "\"";
+    }
     json += ",\"cyclicClass\":\"" + scheduler.moduleClass(mod.id) + "\"";
     if (ts) {
         json += ",\"stats\":{";
@@ -311,11 +314,17 @@ void Server::start() {
         });
 
         // =====================================================================
-        // GET /api/modules/available — List .so files in moduleDir with metadata
+        // GET /api/modules/available — List .so files with metadata across
+        // all configured module directories (primary + additional).
         // =====================================================================
         CROW_ROUTE(app, "/api/modules/available")
         ([this]() {
-            auto available = ModuleLoader::queryAvailable(core_.config().moduleDir);
+            const auto& cfg = core_.config();
+            auto available = ModuleLoader::queryAvailable(cfg.moduleDir);
+            for (const auto& extra : cfg.additionalModuleDirs) {
+                auto more = ModuleLoader::queryAvailable(extra);
+                available.insert(available.end(), more.begin(), more.end());
+            }
             std::vector<AvailableModuleDto> dtos;
             dtos.reserve(available.size());
             for (auto& a : available) {
@@ -388,6 +397,9 @@ void Server::start() {
             json += ",\"version\":\"" + mod->versionStr + "\"";
             json += ",\"state\":" + std::to_string(static_cast<int>(mod->state));
             json += ",\"path\":\"" + jsonEscapeString(mod->path.string()) + "\"";
+            if (!mod->sourceFileStr.empty()) {
+                json += ",\"sourceFile\":\"" + jsonEscapeString(mod->sourceFileStr) + "\"";
+            }
             json += ",\"cyclicClass\":\"" + core_.scheduler().moduleClass(mod->id) + "\"";
 
             auto* ts = core_.scheduler().taskState(mod->id);

@@ -17,6 +17,9 @@ struct ModuleHeader {
     /// SDK version string baked in at module compile time (from VERSION file).
     /// The runtime rejects modules whose sdk_version differs from its own.
     const char* sdk_version = kSdkVersion;
+    /// Source file the LOOM_MODULE_HEADER macro was invoked from (__FILE__).
+    /// Lets tooling jump to source. Null for modules built before this field.
+    const char* source_file = nullptr;
 };
 
 /// Current state of a module in the runtime lifecycle.
