@@ -315,16 +315,28 @@ void Server::start() {
 
         // =====================================================================
         // GET /api/modules/available — List .so files with metadata across
-        // all configured module directories (primary + additional).
+        // all configured module directories. De-duplicated by filename;
+        // primary moduleDir is enumerated first so a user's local build
+        // shadows any system example sharing the same .so name.
         // =====================================================================
         CROW_ROUTE(app, "/api/modules/available")
         ([this]() {
             const auto& cfg = core_.config();
             auto available = ModuleLoader::queryAvailable(cfg.moduleDir);
+
+            std::unordered_set<std::string> seen;
+            seen.reserve(available.size() * 2);
+            for (const auto& a : available) seen.insert(a.filename);
+
             for (const auto& extra : cfg.additionalModuleDirs) {
                 auto more = ModuleLoader::queryAvailable(extra);
-                available.insert(available.end(), more.begin(), more.end());
+                for (auto& a : more) {
+                    if (seen.insert(a.filename).second) {
+                        available.push_back(std::move(a));
+                    }
+                }
             }
+
             std::vector<AvailableModuleDto> dtos;
             dtos.reserve(available.size());
             for (auto& a : available) {

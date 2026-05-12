@@ -180,7 +180,13 @@ std::string ModuleLoader::load(const std::filesystem::path& soPath,
     // fall back to header.name for backwards-compatible single-instance loads.
     std::string id = instanceId.empty() ? std::string(hdr->name) : instanceId;
     if (modules_.contains(id)) {
-        spdlog::error("Module instance '{}' already loaded (class: {})", id, hdr->name);
+        // Demoted from error: with multiple --module-dir paths in play, the
+        // same module showing up in a secondary (read-only) dir is the
+        // expected, primary-wins outcome rather than a failure. Callers
+        // still get an empty return so explicit duplicate loads (re-upload
+        // of an already-loaded instance) fail at the API boundary.
+        spdlog::info("Module instance '{}' already loaded (class: {}); skipping {}",
+                     id, hdr->name, loadPath.string());
         destroyFn(rawInstance);
         dynlib::close(handle);
 #if defined(_WIN32)

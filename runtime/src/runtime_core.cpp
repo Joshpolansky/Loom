@@ -342,6 +342,22 @@ void RuntimeCore::saveInstanceManifest() {
 std::string RuntimeCore::instantiateModule(const std::string& soFilename,
                                             const std::string& instanceId) {
     auto normalized = normalizeModuleFilename(soFilename);
+
+    // Path-traversal guard. `soFilename` arrives over HTTP; reject anything
+    // that isn't a plain filename so that joining with moduleDir can't
+    // escape into the rest of the filesystem (absolute paths replace the
+    // base when joined; "..", separators, drive specs, etc. would let a
+    // caller dlopen arbitrary shared libraries).
+    std::filesystem::path nPath(normalized);
+    if (normalized.empty()
+        || nPath.is_absolute()
+        || nPath.has_parent_path()
+        || nPath != nPath.filename()) {
+        spdlog::error("instantiateModule: rejecting non-filename '{}' (must be a bare .so/.dylib/.dll name)",
+                      soFilename);
+        return {};
+    }
+
     std::filesystem::path soPath = config_.moduleDir / normalized;
     if (!std::filesystem::exists(soPath)) {
         // Fall back to any additional read-only module dirs (system examples
