@@ -471,7 +471,11 @@ public:
                 { std::shared_lock lk(runtimeMutex_); snap = runtime_; }
                 return glz::write_json(snap).value_or("{}");
             }
-            case DataSection::Summary: return glz::write_json(summary_).value_or("{}");
+            case DataSection::Summary: {
+                Summary snap;
+                { std::shared_lock lk(runtimeMutex_); snap = summary_; }
+                return glz::write_json(snap).value_or("{}");
+            }
         }
         return "{}";
     }
