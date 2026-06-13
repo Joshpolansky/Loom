@@ -28,6 +28,15 @@ if(MSVC)
 endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/output")
+set(CMAKE_PDB_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/output")
+
+if(MSVC)
+    # Conan's toolchain suppresses CMake's default /debug linker flag for MSVC
+    # Debug builds, so no PDB is ever emitted. Re-add it explicitly.
+    string(APPEND CMAKE_EXE_LINKER_FLAGS_DEBUG " /DEBUG")
+    string(APPEND CMAKE_SHARED_LINKER_FLAGS_DEBUG " /DEBUG")
+    string(APPEND CMAKE_MODULE_LINKER_FLAGS_DEBUG " /DEBUG")
+endif()
 
 # Platform-appropriate suffix for Loom module plugins (.dll on Windows, .so elsewhere)
 if(WIN32)
