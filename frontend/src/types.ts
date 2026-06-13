@@ -56,10 +56,9 @@ export interface LiveUpdate {
   modules: Record<
     string,
     {
-      // `runtime` is no longer sent on the broadcast `live` frame; it now
-      // arrives via a separate `{type:"runtime"}` frame to subscribers only.
-      // Kept optional here for backward compatibility with any external
-      // consumers; the dataService no longer reads it from `live`.
+      // `runtime` is injected inline into the `live` frame, but only for modules
+      // the connection subscribed to via `module/<id>/runtime`. Optional because
+      // unsubscribed modules omit it.
       runtime?: Record<string, unknown>;
       summary?: Record<string, unknown>;
       stats?: { cycleCount: number; lastCycleTimeUs: number; maxCycleTimeUs: number; overrunCount: number; lastJitterUs: number };
