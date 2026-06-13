@@ -11,6 +11,7 @@
 #include <ctime>
 #include <shared_mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace loom {
@@ -236,44 +237,65 @@ void OpcUaRestServer::pumpLoop() {
         const auto now = steady_clock::now();
         const std::string ts = isoNow();
 
+        // Frames are built under the locks, then flushed AFTER releasing the
+        // module lock — mirroring /ws/watch, so a slow/busy socket can't block
+        // module operations (reload, etc.) for the duration of the sends.
+        std::vector<std::pair<crow::websocket::connection*, std::string>> outbox;
+
         // Lock ordering: SessionManager mutex BEFORE the module mutex (see
-        // opcua_rest_session.h). Held for the whole tick; sends are non-blocking
-        // (Crow posts to ASIO), and reads are sub-millisecond for typical loads.
+        // opcua_rest_session.h). The SessionManager mutex is held across the
+        // flush too, so a disconnecting connection cannot be freed mid-send
+        // (onclose also takes it).
         std::lock_guard<std::mutex> smlk(sm_.mutex());
-        std::shared_lock<std::shared_mutex> ml(core_.moduleMutex());
 
-        for (auto& [sid, sess] : sm_.sessions()) {
-            if (!sess.pushConn) continue;
-            for (auto& [subId, sub] : sess.subs) {
-                if (now < sub.nextDue) continue;
-                sub.nextDue = now + milliseconds(static_cast<long long>(sub.publishingIntervalMs));
+        // Prune idle sessions that timed out without a DELETE. Sessions with a
+        // live pushchannel are kept (their keep-alive HEADs refresh lastSeen).
+        for (auto it = sm_.sessions().begin(); it != sm_.sessions().end();) {
+            auto& s = it->second;
+            const double ageMs = static_cast<double>(duration_cast<milliseconds>(now - s.lastSeen).count());
+            if (!s.pushConn && ageMs > s.timeoutMs) it = sm_.sessions().erase(it);
+            else ++it;
+        }
 
-                std::string notifs;
-                bool any = false;
-                for (auto& [mid, item] : sub.items) {
-                    std::string val;
-                    uint32_t st = readValueLocked(core_, item.parsed, val);
-                    bool changed = !item.firstSent || st != item.lastStatus || val != item.lastJson;
-                    if (!changed) continue;
-                    item.firstSent  = true;
-                    item.lastStatus = st;
-                    item.lastJson   = val;
+        {
+            std::shared_lock<std::shared_mutex> ml(core_.moduleMutex());
+            for (auto& [sid, sess] : sm_.sessions()) {
+                if (!sess.pushConn) continue;
+                for (auto& [subId, sub] : sess.subs) {
+                    if (now < sub.nextDue) continue;
+                    sub.nextDue = now + milliseconds(static_cast<long long>(sub.publishingIntervalMs));
 
-                    if (any) notifs += ",";
-                    notifs += "{\"clientHandle\":" + std::to_string(item.clientHandle) +
-                              ",\"value\":" + val +
-                              ",\"status\":{\"code\":" + std::to_string(st) +
-                              ",\"symbol\":\"" + statusString(st) + "\"}" +
-                              ",\"sourceTimestamp\":\"" + ts + "\",\"serverTimestamp\":\"" + ts + "\"}";
-                    any = true;
+                    std::string notifs;
+                    bool any = false;
+                    for (auto& [mid, item] : sub.items) {
+                        std::string val;
+                        uint32_t st = readValueLocked(core_, item.parsed, val);
+                        bool changed = !item.firstSent || st != item.lastStatus || val != item.lastJson;
+                        if (!changed) continue;
+                        item.firstSent  = true;
+                        item.lastStatus = st;
+                        item.lastJson   = val;
+
+                        if (any) notifs += ",";
+                        notifs += "{\"clientHandle\":" + std::to_string(item.clientHandle) +
+                                  ",\"value\":" + val +
+                                  ",\"status\":{\"code\":" + std::to_string(st) +
+                                  ",\"symbol\":\"" + statusString(st) + "\"}" +
+                                  ",\"sourceTimestamp\":\"" + ts + "\",\"serverTimestamp\":\"" + ts + "\"}";
+                        any = true;
+                    }
+                    if (!any) continue;
+
+                    outbox.emplace_back(sess.pushConn,
+                        "{\"sessionId\":" + std::to_string(sid) +
+                        ",\"subscriptionId\":" + std::to_string(subId) +
+                        ",\"DataNotifications\":[" + notifs + "]}");
                 }
-                if (!any) continue;
-
-                std::string frame = "{\"sessionId\":" + std::to_string(sid) +
-                                    ",\"subscriptionId\":" + std::to_string(subId) +
-                                    ",\"DataNotifications\":[" + notifs + "]}";
-                try { sess.pushConn->send_text(frame); } catch (...) { /* closing; cleaned on onclose */ }
             }
+        } // module lock released here
+
+        for (auto& [conn, frame] : outbox) {
+            try { conn->send_text(frame); } catch (...) { /* closing; cleaned on onclose */ }
         }
     }
 }
@@ -291,7 +313,7 @@ void OpcUaRestServer::registerRoutes(crow::SimpleApp& app) {
         ([](const crow::request& req) {
             if (isOptions(req)) return jsonResp(204, "");
             auto r = jsonResp(200, "{\"success\":true,\"roles\":[]}");
-            r.add_header("Set-Cookie", "ClientId={loom}; Path=/");
+            r.add_header("Set-Cookie", "ClientId={loom}; Path=/; HttpOnly; SameSite=Strict");
             return r;
         });
 
@@ -301,11 +323,12 @@ void OpcUaRestServer::registerRoutes(crow::SimpleApp& app) {
         ([&sm](const crow::request& req) {
             if (isOptions(req)) return jsonResp(204, "");
             SessionBody body{};
-            readPermissive(body, req.body);
+            if (!req.body.empty() && readPermissive(body, req.body))
+                return jsonResp(400, "{\"error\":\"malformed JSON body\"}");
             uint64_t id = sm.createSession(body.timeout);
             auto r = jsonResp(201, "{\"id\":" + std::to_string(id) +
                                    ",\"status\":{\"code\":0,\"string\":\"Good\"}}");
-            r.add_header("Set-Cookie", "ClientId={" + std::to_string(id) + "}; Path=/");
+            r.add_header("Set-Cookie", "ClientId={" + std::to_string(id) + "}; Path=/; HttpOnly; SameSite=Strict");
             return r;
         });
 
@@ -430,7 +453,9 @@ void OpcUaRestServer::registerRoutes(crow::SimpleApp& app) {
             const std::string nodeDecoded = urlDecode(nodeRaw);
             if (req.method == "PUT"_method) {
                 PutBody pb{};
-                readPermissive(pb, req.body);
+                if (readPermissive(pb, req.body) || pb.value.str.empty())
+                    return jsonResp(400, "{\"status\":{\"code\":2147483648,\"string\":\"Bad\"},"
+                                         "\"error\":\"malformed or missing value\"}");
                 return jsonResp(200, buildWriteBody(core, nodeDecoded, pb.value.str));
             }
             return jsonResp(200, buildReadBody(core, nodeDecoded, attr));
@@ -444,7 +469,8 @@ void OpcUaRestServer::registerRoutes(crow::SimpleApp& app) {
             uint64_t sid = 0;
             if (!parseU64(sidStr, sid)) return jsonResp(404, "{\"error\":\"bad session id\"}");
             SubBody body{};
-            readPermissive(body, req.body);
+            if (!req.body.empty() && readPermissive(body, req.body))
+                return jsonResp(400, "{\"error\":\"malformed JSON body\"}");
             auto subId = sm.createSubscription(sid, body.publishingInterval);
             if (!subId) return jsonResp(404, "{\"error\":\"no such session\"}");
             return jsonResp(201, "{\"status\":{\"code\":0,\"string\":\"Good\"},\"subscriptionId\":" +
@@ -502,7 +528,8 @@ void OpcUaRestServer::registerRoutes(crow::SimpleApp& app) {
                 return jsonResp(404, "{\"error\":\"bad id\"}");
             sm.touch(sid);
             MonItemBody mib{};
-            readPermissive(mib, req.body);
+            if (readPermissive(mib, req.body))
+                return jsonResp(400, "{\"error\":\"malformed JSON body\"}");
             opcrest::MonitoredItem item;
             item.clientHandle = mib.monitoringParameters.clientHandle;
             item.nodeId       = mib.itemToMonitor.nodeId;
@@ -549,16 +576,20 @@ void OpcUaRestServer::registerRoutes(crow::SimpleApp& app) {
             if (!p) return false;
             uint64_t sid = 0;
             if (!parseU64(p, sid) || !sm.hasSession(sid)) return false;
-            *userdata = reinterpret_cast<void*>(static_cast<uintptr_t>(sid));
+            // Stash the session id as a heap uint64_t (freed in onclose) — avoids
+            // integer↔pointer aliasing / truncation on narrow-pointer platforms.
+            *userdata = new uint64_t(sid);
             return true;
         })
         .onopen([&sm](crow::websocket::connection& conn) {
-            uint64_t sid = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(conn.userdata()));
+            auto* sidPtr = static_cast<uint64_t*>(conn.userdata());
+            uint64_t sid = sidPtr ? *sidPtr : 0;
             sm.bindPushConn(sid, &conn);
             spdlog::info("opcua_rest pushchannel opened (session {})", sid);
         })
         .onclose([&sm](crow::websocket::connection& conn, const std::string& reason, unsigned short /*code*/) {
             sm.unbindPushConn(&conn);
+            delete static_cast<uint64_t*>(conn.userdata());
             spdlog::info("opcua_rest pushchannel closed: {}", reason);
         })
         .onmessage([](crow::websocket::connection&, const std::string&, bool) { /* client→server unused */ });
