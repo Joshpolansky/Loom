@@ -1,5 +1,6 @@
 #include "loom/module_loader.h"
 #include "loom/dynlib.h"
+#include "loom/build_info.h"
 
 #include <spdlog/spdlog.h>
 #include <atomic>
@@ -14,6 +15,50 @@ static std::atomic<uint64_t> gShadowLoadCounter{0};
 using CreateFn = IModule* (*)();
 using DestroyFn = void (*)(IModule*);
 using QueryHeaderFn = const ModuleHeader* (*)();
+using QueryBuildInfoFn = const BuildInfo* (*)();
+
+// Compare a module's compile-time ABI signature against the runtime's own.
+// Returns an empty string when the two are compatible, otherwise a
+// human-readable reason describing the incompatibility. Mismatched CRT
+// flavor or Debug/Release STL between a host EXE and a plugin DLL causes
+// heap corruption (a string/vector allocated by one side, freed by the
+// other), so we refuse to load rather than crash later.
+static std::string abiMismatchReason(const BuildInfo& rt, const BuildInfo& mod) {
+    std::string reason;
+    auto add = [&](const std::string& s) {
+        if (!reason.empty()) reason += "; ";
+        reason += s;
+    };
+
+    if (mod.pointer_bits != rt.pointer_bits) {
+        add("pointer width differs (module " + std::to_string(mod.pointer_bits) +
+            "-bit, runtime " + std::to_string(rt.pointer_bits) + "-bit)");
+    }
+
+    // CRT/STL ABI checks are MSVC-specific. On libstdc++/libc++ these macros
+    // are absent on both sides, so the fields compare equal and this is a no-op.
+    if (rt.is_msvc && mod.is_msvc) {
+        if (mod.iterator_debug_level != rt.iterator_debug_level) {
+            auto stl = [](int32_t idl) {
+                return idl >= 2 ? "Debug STL" : "Release STL";
+            };
+            add(std::string("STL debug level differs (module ") + stl(mod.iterator_debug_level) +
+                " _ITERATOR_DEBUG_LEVEL=" + std::to_string(mod.iterator_debug_level) +
+                ", runtime " + stl(rt.iterator_debug_level) +
+                " =" + std::to_string(rt.iterator_debug_level) + ")");
+        }
+        if (mod.debug_crt != rt.debug_crt) {
+            add(std::string("CRT flavor differs (module ") + (mod.debug_crt ? "Debug" : "Release") +
+                " CRT, runtime " + (rt.debug_crt ? "Debug" : "Release") + " CRT)");
+        }
+        if (mod.dynamic_crt != rt.dynamic_crt) {
+            add(std::string("CRT linkage differs (module ") + (mod.dynamic_crt ? "/MD dynamic" : "/MT static") +
+                ", runtime " + (rt.dynamic_crt ? "/MD dynamic" : "/MT static") + ")");
+        }
+    }
+
+    return reason;
+}
 
 ModuleLoader::~ModuleLoader() {
     // Unload all modules in reverse order
@@ -142,6 +187,42 @@ std::string ModuleLoader::load(const std::filesystem::path& soPath,
         cleanupShadowDir();
 #endif
         return {};
+    }
+
+    // Build/ABI signature check: a module built with a different CRT flavor or
+    // Debug/Release STL than the runtime will corrupt the heap the first time a
+    // std::string/std::vector crosses the boundary. Reject with a clear message
+    // instead. Read via the C-ABI BuildInfo POD, which is safe even under a
+    // mismatch. Modules built before this symbol existed are allowed through
+    // with a warning (we cannot verify them).
+    auto queryBuildInfo = reinterpret_cast<QueryBuildInfoFn>(dynlib::sym(handle, "loom_query_build_info"));
+    if (!queryBuildInfo) {
+        spdlog::warn("Module {} has no build signature (built with an older SDK); "
+                     "cannot verify CRT/STL compatibility. If it crashes, rebuild it against SDK {}.",
+                     loadPath.string(), kSdkVersion);
+    } else if (const BuildInfo* modBuild = queryBuildInfo()) {
+        const BuildInfo runtimeBuild = loomCurrentBuildInfo();
+        std::string mismatch = abiMismatchReason(runtimeBuild, *modBuild);
+        if (!mismatch.empty()) {
+            spdlog::error("Build/ABI mismatch for {}: {}. Rebuild the module in the same "
+                          "configuration as the runtime (matching Debug/Release and CRT).",
+                          loadPath.string(), mismatch);
+            dynlib::close(handle);
+#if defined(_WIN32)
+            cleanupShadowDir();
+#endif
+            return {};
+        }
+        // Toolset version is informational: the MSVC 14.x family (VS 2015–2026)
+        // is binary compatible, so we don't reject on it. But if the module was
+        // built with a newer toolset than the runtime, the machine needs a
+        // VC++ redistributable at least as new as the module's toolset.
+        if (runtimeBuild.is_msvc && modBuild->is_msvc && modBuild->msc_ver > runtimeBuild.msc_ver) {
+            spdlog::warn("Module {} was built with a newer MSVC toolset (_MSC_VER={}) than the "
+                         "runtime (_MSC_VER={}). Ensure an up-to-date Visual C++ Redistributable "
+                         "is installed, or the module may fail to resolve runtime symbols.",
+                         loadPath.string(), modBuild->msc_ver, runtimeBuild.msc_ver);
+        }
     }
 
     // Resolve factory functions

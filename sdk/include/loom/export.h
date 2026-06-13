@@ -1,6 +1,7 @@
 #pragma once
 
 #include "loom/types.h"
+#include "loom/build_info.h"
 
 /// Visibility attribute for exported symbols.
 #if defined(_WIN32) || defined(__CYGWIN__)
@@ -61,6 +62,15 @@
     LOOM_EXPORT const loom::ModuleHeader* loom_query_header() {                  \
         static const loom::ModuleHeader hdr = ModuleClass::moduleHeader();     \
         return &hdr;                                                          \
+    }                                                                         \
+                                                                              \
+    /* ABI build signature — evaluated in the module's translation unit so it */ \
+    /* reflects how this module was compiled (CRT flavor, Debug/Release STL,   */ \
+    /* toolset). The runtime compares it against its own to reject mismatched  */ \
+    /* modules with a clear message instead of crashing on a cross-heap free.  */ \
+    LOOM_EXPORT const loom::BuildInfo* loom_query_build_info() {                 \
+        static const loom::BuildInfo info = loom::loomCurrentBuildInfo();       \
+        return &info;                                                          \
     }                                                                         \
                                                                               \
     } /* extern "C" */

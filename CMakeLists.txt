@@ -14,6 +14,19 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Position-independent code for shared libraries
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Use the dynamic CRT (/MD, /MDd) for everything on MSVC — never the static CRT
+# (/MT). Loom loads module plugins as separate shared libraries and passes
+# std::string/std::vector across that boundary; a static CRT gives each binary
+# its own heap, so an object allocated by one side and freed by the other
+# corrupts the heap. The dynamic CRT lets the runtime EXE and every module DLL
+# share one heap. (Debug-vs-Release matching, which the dynamic CRT does NOT fix
+# on its own, is enforced at load time by the module build-signature check in
+# module_loader.cpp via loom_query_build_info.)
+# Requires policy CMP0091 = NEW, which holds via cmake_minimum_required(3.25).
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/output")
 
 # Platform-appropriate suffix for Loom module plugins (.dll on Windows, .so elsewhere)

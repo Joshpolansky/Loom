@@ -15,6 +15,19 @@ if(NOT TARGET glaze::glaze)
     )
 endif()
 
+# Loom module plugins must use the dynamic CRT (/MD, /MDd) so the module DLL and
+# the host runtime EXE share one heap — objects allocated on one side of the
+# plugin boundary are freed on the other. Default consumers to it unless they
+# have already made an explicit choice. This only guarantees the dynamic (vs
+# static /MT) CRT; the consumer must still build the same Debug/Release
+# configuration as the runtime they load into. The runtime verifies both at
+# load time (see loom_query_build_info) and rejects mismatches with a clear
+# message instead of crashing.
+if(MSVC AND NOT DEFINED CMAKE_MSVC_RUNTIME_LIBRARY)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    message(STATUS "loom: defaulting MSVC runtime library to the dynamic CRT (/MD) for module ABI compatibility")
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/LoomSdkTargets.cmake")
 
 if(NOT TARGET loom::sdk)
