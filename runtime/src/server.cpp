@@ -1659,6 +1659,12 @@ void Server::start() {
             res.end();
         });
 
+        // mapp Connect-compatible facade — additive REST + /api/1.0/pushchannel.
+        // Registered alongside the legacy /ws and /api/* routes; shares core_.
+        opcRest_ = std::make_unique<OpcUaRestServer>(core_);
+        opcRest_->registerRoutes(app);
+        opcRest_->startPump(config_.wsUpdateIntervalMs);
+
         spdlog::info("Starting HTTP server on {}:{}", config_.bindAddress, config_.port);
         app.bindaddr(config_.bindAddress)
            .port(config_.port)
@@ -1670,6 +1676,7 @@ void Server::start() {
         if (wsThread.joinable()) wsThread.join();
         watchRunning.store(false);
         if (watchThread.joinable()) watchThread.join();
+        if (opcRest_) opcRest_->stopPump();
     });
 }
 
