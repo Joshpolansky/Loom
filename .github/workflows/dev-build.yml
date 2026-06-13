@@ -1,0 +1,75 @@
+name: Dev build
+
+# Manually-triggered rolling dev build. Run it from the Actions tab and pick
+# the branch you want to test (the workflow_dispatch branch selector controls
+# what gets built). It publishes to a single prerelease tagged `dev`, replacing
+# the previous dev build each time.
+#
+# Because `dev` is a prerelease, it never appears in GitHub's /releases/latest,
+# so it won't disturb users on the stable channel. In the LoomUI extension,
+# enable `loom.includePrereleaseBuilds` and run "Loom: Select Loom Build" to
+# install it. Assets are byte-for-byte the same shape as a real release (the
+# build is shared via build.yml), so testing the dev build exercises the same
+# packaging that ships.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  # Never let two dev publishes race on the rolling tag.
+  group: dev-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ github.ref }}
+
+  publish:
+    name: Publish rolling dev prerelease
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Show staged assets
+        run: ls -lh dist/
+
+      - name: Remove previous dev release and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Delete the existing rolling release and its tag so the recreated
+          # one points at this commit. Ignore failure when none exists yet.
+          gh release delete dev --cleanup-tag --yes || true
+
+      - name: Publish dev prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev
+          target_commitish: ${{ github.sha }}
+          name: Dev build (${{ github.ref_name }} @ ${{ github.sha }})
+          prerelease: true
+          files: dist/loom-*.tar.gz
+          fail_on_unmatched_files: true
+          body: |
+            Rolling development build — **not** a stable release.
+
+            - Branch/ref: `${{ github.ref_name }}`
+            - Commit: `${{ github.sha }}`
+            - Built: run #${{ github.run_number }}
+
+            Install via the LoomUI extension: enable `loom.includePrereleaseBuilds`,
+            then run **Loom: Select Loom Build** and choose `dev`.

@@ -1,0 +1,189 @@
+name: Build
+
+# Reusable build workflow. Builds Loom on each platform and uploads the
+# packaged tarballs as artifacts named loom-<platform>[-debug]. Called by
+# release.yml (stable releases) and dev-build.yml (rolling dev prerelease) so
+# both channels build through the exact same pipeline — the dev build you test
+# is produced identically to the release you eventually cut.
+#
+# macOS and Linux only need a Release build (no CRT ABI split). Windows
+# produces two assets:
+#   loom-win32-x64.tar.gz        ← Release runtime (matches LoomUI default)
+#   loom-win32-x64-debug.tar.gz  ← Debug runtime   (matches LoomUI releaseAssetTemplateDebug)
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref (tag, branch, or SHA) to check out and build.'
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform_name }})
+    runs-on: ${{ matrix.os }}
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2
+      ASSET_BASENAME: loom-${{ matrix.platform_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest      # Apple Silicon runners are now default
+            platform_name: darwin-arm64
+            build_type: Release
+            conan_profile: release
+            cmake_preset_cfg: release
+            asset_suffix: ''
+          - os: ubuntu-latest
+            platform_name: linux-x64
+            build_type: Release
+            conan_profile: release
+            cmake_preset_cfg: release
+            asset_suffix: ''
+          - os: windows-latest
+            platform_name: win32-x64
+            build_type: Release
+            conan_profile: release
+            cmake_preset_cfg: release
+            asset_suffix: ''
+          - os: windows-latest
+            platform_name: win32-x64
+            build_type: Debug
+            conan_profile: debug
+            cmake_preset_cfg: debug
+            asset_suffix: '-debug'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: .github/workflows/build.yml
+
+      - name: Set up MSVC developer command prompt
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONAN_HOME }}
+          key: ${{ matrix.platform_name }}-conan-${{ matrix.conan_profile }}-${{ hashFiles('conanfile.py', format('conan/profiles/{0}', matrix.conan_profile), 'sdk/conanfile.py', 'runtime/conanfile.py', 'VERSION') }}
+          restore-keys: |
+            ${{ matrix.platform_name }}-conan-${{ matrix.conan_profile }}-
+
+      - name: Install Conan
+        run: python -m pip install --upgrade pip conan
+
+      - name: Detect Conan profile
+        run: conan profile detect --force
+
+      - name: Install Conan dependencies
+        run: conan install . --output-folder=build/${{ matrix.build_type }} --build=missing --profile=conan/profiles/${{ matrix.conan_profile }}
+
+      - name: Configure CMake
+        run: cmake --preset conan-${{ matrix.cmake_preset_cfg }}
+
+      - name: Build
+        run: cmake --build --preset conan-${{ matrix.cmake_preset_cfg }}
+
+      - name: CMake install (SDK headers + cmake config) into staging prefix
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf install
+          cmake --install build/${{ matrix.build_type }} --prefix install
+
+      - name: Bundle glaze headers from Conan cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Glaze is a header-only Conan dep. Locate its include dir in the
+          # Conan cache so we can ship it alongside the loom SDK headers,
+          # making the install self-contained for module developers.
+          GLAZE_HPP=$(find "$CONAN_HOME" -type f -path '*/include/glaze/glaze.hpp' 2>/dev/null | head -n 1)
+          if [ -z "$GLAZE_HPP" ]; then
+            echo "::error::could not locate glaze headers in Conan cache" >&2
+            find "$CONAN_HOME" -type d -name glaze 2>/dev/null | head || true
+            exit 1
+          fi
+          GLAZE_INC_ROOT=$(dirname "$(dirname "$GLAZE_HPP")")
+          echo "found glaze include root: $GLAZE_INC_ROOT"
+          mkdir -p install/include
+          cp -r "$GLAZE_INC_ROOT/glaze" install/include/
+
+      - name: Stage release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="dist/${ASSET_BASENAME}${{ matrix.asset_suffix }}"
+          mkdir -p "${STAGE}/modules"
+
+          # Binary: CMakeLists installs to install/bin/. The build also
+          # leaves it under output/ — prefer the install one since it's
+          # the canonical install path.
+          if [ -f "install/bin/loom" ]; then
+            cp "install/bin/loom" "${STAGE}/loom"
+          elif [ -f "install/bin/loom.exe" ]; then
+            cp "install/bin/loom.exe" "${STAGE}/loom.exe"
+          elif [ -f "output/loom" ]; then
+            cp "output/loom" "${STAGE}/loom"
+          elif [ -f "output/loom.exe" ]; then
+            cp "output/loom.exe" "${STAGE}/loom.exe"
+          else
+            echo "::error::Loom binary not produced by build" >&2
+            ls -la install/bin output/ 2>/dev/null || true
+            exit 1
+          fi
+
+          # Module plugins. On Windows they are under output/modules/<Config>
+          # (Debug or Release). On other platforms they are flat in output/modules.
+          BUILD_TYPE="${{ matrix.build_type }}"
+          if [ -d "output/modules/${BUILD_TYPE}" ]; then
+            MOD_DIR="output/modules/${BUILD_TYPE}"
+          elif [ -d "output/modules" ]; then
+            MOD_DIR="output/modules"
+          else
+            MOD_DIR=""
+          fi
+          if [ -n "${MOD_DIR}" ]; then
+            shopt -s nullglob
+            for mod in "${MOD_DIR}"/*.so "${MOD_DIR}"/*.dylib "${MOD_DIR}"/*.dll; do
+              cp "$mod" "${STAGE}/modules/"
+            done
+          fi
+
+          # SDK headers + cmake config + bundled glaze headers, so module
+          # developers can `find_package(loom CONFIG REQUIRED)` against the
+          # extracted tarball without needing Conan or a separate glaze
+          # install.
+          if [ -d install/include ]; then
+            cp -r install/include "${STAGE}/include"
+          fi
+          if [ -d install/lib ]; then
+            cp -r install/lib "${STAGE}/lib"
+          fi
+
+          # Drop in companion files so a tarball is informative on its own.
+          for f in README.md LICENSE VERSION CHANGELOG.md; do
+            [ -f "$f" ] && cp "$f" "${STAGE}/" || true
+          done
+
+          tar -czf "dist/${ASSET_BASENAME}${{ matrix.asset_suffix }}.tar.gz" -C dist "${ASSET_BASENAME}${{ matrix.asset_suffix }}"
+          ls -lh dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET_BASENAME }}${{ matrix.asset_suffix }}
+          path: dist/${{ env.ASSET_BASENAME }}${{ matrix.asset_suffix }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
