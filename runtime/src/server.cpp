@@ -8,6 +8,10 @@
 namespace { std::string g_crowStaticDir = "./data/UI/"; }
 #define CROW_STATIC_DIRECTORY g_crowStaticDir
 #define CROW_STATIC_ENDPOINT "/<path>"
+// We register our own "/<path>" catch-all in Server::start() that serves real
+// files and falls back to index.html (generic SPA hosting). Disable Crow's
+// built-in static catch-all so it doesn't duplicate/override that route.
+#define CROW_DISABLE_STATIC_DIR
 
 #include <crow.h>
 #include <glaze/glaze.hpp>
@@ -1644,48 +1648,66 @@ void Server::start() {
             }
         });
 
-        // Set up static file serving from config_.staticDir.
+        // Set up static file serving from config_.staticDir. Crow resolves
+        // CROW_STATIC_DIRECTORY (= g_crowStaticDir) at run() time, so point it at
+        // the *configured* dir here — otherwise a non-default --data-dir serves
+        // the build-default "./data/UI" (relative to cwd) and 404s. The index +
+        // SPA-fallback routes below read g_crowStaticDir too.
         const std::string staticDir = crow::utility::normalize_path(config_.staticDir);
+        g_crowStaticDir = staticDir; // normalized: forward slashes + trailing '/'
         if (!std::filesystem::exists(config_.staticDir)) {
             spdlog::warn("Static file directory does not exist: {}", config_.staticDir);
         } else {
             spdlog::info("Serving static files from: {}", config_.staticDir);
         }
 
+        // index.html, read directly into the response body. set_static_file_info
+        // mangles absolute paths via sanitize_filename (→ 404), so we read the
+        // file ourselves rather than relying on Crow's static helper here.
+        auto serveIndex = []() {
+            std::ifstream f(g_crowStaticDir + "index.html", std::ios::binary);
+            std::stringstream ss;
+            ss << f.rdbuf();
+            crow::response res(200, ss.str());
+            res.add_header("Content-Type", "text/html; charset=utf-8");
+            return res;
+        };
+
         // Serve index.html at root.
         CROW_ROUTE(app, "/")
-        ([](crow::response& res) {
-            res.set_static_file_info(g_crowStaticDir + "index.html");
-            res.end();
-        });
-
-        // SPA history fallback: client-side router paths must return index.html
-        // (a hard navigation / refresh on these would otherwise hit the static
-        // file route and 404). These explicit routes are registered before the
-        // catch-all static endpoint (Crow adds that during run()), so they win;
-        // /assets/* and other real files still fall through to static serving.
-        // Add new top-level client routes here when the frontend router gains them.
-        {
-            auto serveIndex = []() {
-                std::ifstream f(g_crowStaticDir + "index.html", std::ios::binary);
-                std::stringstream ss;
-                ss << f.rdbuf();
-                crow::response res(200, ss.str());
-                res.add_header("Content-Type", "text/html; charset=utf-8");
-                return res;
-            };
-            for (const char* path : { "/scheduler", "/bus", "/scope", "/watch", "/mappings" }) {
-                app.route_dynamic(path)([serveIndex]() { return serveIndex(); });
-            }
-            CROW_ROUTE(app, "/module/<string>")
-            ([serveIndex](const std::string&) { return serveIndex(); });
-        }
+        ([serveIndex]() { return serveIndex(); });
 
         // mapp Connect-compatible facade — additive REST + /api/1.0/pushchannel.
         // Registered alongside the legacy /ws and /api/* routes; shares core_.
         opcRest_ = std::make_unique<OpcUaRestServer>(core_);
         opcRest_->registerRoutes(app);
         opcRest_->startPump(config_.wsUpdateIntervalMs);
+
+        // Generic static + SPA history fallback (replaces Crow's built-in static
+        // catch-all, which we disabled via CROW_DISABLE_STATIC_DIR). For any GET:
+        //   - if it maps to a real file under the static dir, serve that file;
+        //   - otherwise return index.html so the client-side router can handle it
+        //     (a hard navigation/refresh on a client route returns the app, not 404).
+        // This lets Loom host ANY single-page app without hardcoding its routes.
+        //
+        // IMPORTANT: this catch-all MUST be registered LAST. Crow resolves a
+        // path that matches multiple rules to the LOWEST rule_index, i.e. the
+        // earliest-registered rule wins. Registering this "/<path>" wildcard
+        // after every real route (REST + WebSocket) gives it the highest index,
+        // so it only wins when no literal route matches — otherwise it would
+        // shadow the facade's GET endpoints and the pushchannel WS upgrade.
+        CROW_ROUTE(app, "/<path>")
+        ([serveIndex](crow::response& res, const std::string& filePathPartial) {
+            std::error_code ec;
+            const std::string full = g_crowStaticDir + filePathPartial;
+            if (std::filesystem::is_regular_file(full, ec)) {
+                res.set_static_file_info_unsafe(full);
+                res.end();
+            } else {
+                res = serveIndex();
+                res.end();
+            }
+        });
 
         spdlog::info("Starting HTTP server on {}:{}", config_.bindAddress, config_.port);
         app.bindaddr(config_.bindAddress)
