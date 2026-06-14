@@ -104,7 +104,7 @@ function AppProviders() {
 
 function App() {
   return (
-    <BrowserRouter>
+    <BrowserRouter basename="/_loom">
       <MachineProvider id="loom" machine={machine}>
         <AppProviders />
       </MachineProvider>

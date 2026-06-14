@@ -3,6 +3,10 @@ import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
 export default defineConfig({
+  // The Loom UI is served under /_loom by the runtime (see server.cpp), so asset
+  // URLs and the router base must be prefixed. Keep in sync with BrowserRouter's
+  // basename in App.tsx. Dev server therefore also serves at /_loom/.
+  base: '/_loom/',
   plugins: [react()],
   server: {
     proxy: {

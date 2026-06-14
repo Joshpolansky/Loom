@@ -7,10 +7,15 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 namespace loom {
 
@@ -22,6 +27,46 @@ namespace {
         g_running = false;
     }
 
+    /// Directory containing this executable, or empty on platforms/failures we
+    /// can't resolve. Used to find the installed Loom UI relative to the binary.
+    std::filesystem::path executableDir() {
+        std::error_code ec;
+#ifdef __APPLE__
+        uint32_t size = 0;
+        _NSGetExecutablePath(nullptr, &size);
+        std::string buf(size, '\0');
+        if (_NSGetExecutablePath(buf.data(), &size) != 0) return {};
+        auto p = std::filesystem::canonical(buf, ec);
+#elif defined(__linux__)
+        auto p = std::filesystem::canonical("/proc/self/exe", ec);
+#else
+        std::filesystem::path p;
+#endif
+        return ec ? std::filesystem::path{} : p.parent_path();
+    }
+
+    /// Resolve the Loom monitoring UI dir, served always at /_loom. Prefers the
+    /// install-relative location (<exe>/../share/loom/ui), independent of
+    /// --data-dir so it stays reachable when the data dir hosts a user app.
+    /// Falls back to <dataDir>/UI for dev/standby runs.
+    std::string resolveLoomUiDir(const std::string& dataDir) {
+        std::vector<std::filesystem::path> candidates;
+        if (const auto exeDir = executableDir(); !exeDir.empty()) {
+            candidates.push_back(exeDir / ".." / "share" / "loom" / "ui");
+            candidates.push_back(exeDir / ".." / "data" / "UI"); // legacy install layout
+        }
+        const std::filesystem::path dataUi = std::filesystem::path(dataDir) / "UI";
+        candidates.push_back(dataUi);
+        std::error_code ec;
+        for (const auto& c : candidates) {
+            if (std::filesystem::exists(c / "index.html", ec)) {
+                auto resolved = std::filesystem::weakly_canonical(c, ec);
+                return (ec ? c : resolved).string();
+            }
+        }
+        return dataUi.string(); // best-effort; server logs a warning if missing
+    }
+
     void printUsage(const char* argv0) {
         std::cerr << "Usage: " << argv0 << " --module-dir <path> [--module-dir <path> ...] [--data-dir <path>] [--cycle-ms <ms>] [--port <port>] [--bind <addr>]\n"
                   << "\n"
@@ -31,6 +76,8 @@ namespace {
                   << "                       writable/watched dir (uploads land there, edits to it\n"
                   << "                       trigger hot-reload). Subsequent dirs are read-only.\n"
                   << "  --data-dir <path>    Directory for config/recipe persistence (default: ./data)\n"
+                  << "  --loom-ui-dir <path> Directory of the Loom monitoring UI served at /_loom\n"
+                  << "                       (default: install-relative, falls back to <data-dir>/UI)\n"
                   << "  --cycle-ms <ms>      Default cycle period in milliseconds (default: 100)\n"
                   << "  --port <port>        HTTP/WebSocket server port (default: 8080)\n"
                   << "  --bind <addr>        Bind address (default: 127.0.0.1, use 0.0.0.0 for all interfaces)\n"
@@ -45,6 +92,7 @@ int run(int argc, char* argv[]) {
 
     std::vector<std::string> moduleDirs;
     std::string dataDir = "./data";
+    std::string loomUiDir; // empty → resolve install-relative (see resolveLoomUiDir)
     std::string bindAddress = "127.0.0.1";
     int cycleMs = 100;
     int port = 8080;
@@ -55,6 +103,8 @@ int run(int argc, char* argv[]) {
             moduleDirs.emplace_back(argv[++i]);
         } else if (arg == "--data-dir" && i + 1 < argc) {
             dataDir = argv[++i];
+        } else if (arg == "--loom-ui-dir" && i + 1 < argc) {
+            loomUiDir = argv[++i];
         } else if (arg == "--cycle-ms" && i + 1 < argc) {
             cycleMs = std::stoi(argv[++i]);
         } else if (arg == "--port" && i + 1 < argc) {
@@ -109,6 +159,8 @@ int run(int argc, char* argv[]) {
     serverCfg.port = static_cast<uint16_t>(port);
     serverCfg.bindAddress = bindAddress;
     serverCfg.staticDir = dataDir + "/UI";
+    serverCfg.loomUiDir = loomUiDir.empty() ? resolveLoomUiDir(dataDir) : loomUiDir;
+    spdlog::info("Loom UI directory (/_loom): {}", serverCfg.loomUiDir);
     Server server(core, serverCfg);
     server.start();
 

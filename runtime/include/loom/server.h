@@ -16,6 +16,9 @@ struct ServerConfig {
     std::string bindAddress = "127.0.0.1";
     int wsUpdateIntervalMs = 100;
     std::string staticDir = "./data/UI";
+    /// Loom monitoring/config UI, served always at /_loom. Resolved independently
+    /// of staticDir so it stays reachable even when staticDir hosts a user app.
+    std::string loomUiDir = "./data/UI";
 };
 
 /// REST + WebSocket server — thin translation layer over RuntimeCore.

@@ -6,6 +6,9 @@
 #include <crow/logging.h>
 #include <string>
 namespace { std::string g_crowStaticDir = "./data/UI/"; }
+// Loom monitoring UI dir (normalized: trailing '/'), served at /_loom. Set in
+// start() from config_.loomUiDir; read by the /_loom routes below.
+namespace { std::string g_crowLoomUiDir = "./data/UI/"; }
 #define CROW_STATIC_DIRECTORY g_crowStaticDir
 #define CROW_STATIC_ENDPOINT "/<path>"
 // We register our own "/<path>" catch-all in Server::start() that serves real
@@ -1661,27 +1664,78 @@ void Server::start() {
             spdlog::info("Serving static files from: {}", config_.staticDir);
         }
 
+        // Loom monitoring UI dir — resolved independently of staticDir (typically
+        // install-relative) so /_loom works even when staticDir hosts a user app.
+        g_crowLoomUiDir = crow::utility::normalize_path(config_.loomUiDir);
+        if (!std::filesystem::exists(config_.loomUiDir)) {
+            spdlog::warn("Loom UI directory does not exist: {}", config_.loomUiDir);
+        } else {
+            spdlog::info("Serving Loom UI (/_loom) from: {}", config_.loomUiDir);
+        }
+
         // index.html, read directly into the response body. set_static_file_info
         // mangles absolute paths via sanitize_filename (→ 404), so we read the
         // file ourselves rather than relying on Crow's static helper here.
-        auto serveIndex = []() {
-            std::ifstream f(g_crowStaticDir + "index.html", std::ios::binary);
+        auto readIndex = [](const std::string& dir) {
+            std::ifstream f(dir + "index.html", std::ios::binary);
             std::stringstream ss;
             ss << f.rdbuf();
             crow::response res(200, ss.str());
             res.add_header("Content-Type", "text/html; charset=utf-8");
             return res;
         };
+        auto serveIndex     = [readIndex]() { return readIndex(g_crowStaticDir); };
+        auto serveLoomIndex = [readIndex]() { return readIndex(g_crowLoomUiDir); };
+
+        // In standby (no user app) staticDir *is* the Loom UI, which is built for
+        // base '/_loom/' — serving it at '/' would render blank. So when the root
+        // static dir resolves to the Loom UI, send '/' to the canonical /_loom/.
+        // In user-project mode the dirs differ and the user app is served at '/'.
+        // Compare by filesystem identity (handles relative-vs-absolute paths);
+        // equivalent() needs both to exist, so a missing dir yields false.
+        std::error_code rootEqEc;
+        const bool rootIsLoomUi =
+            std::filesystem::equivalent(config_.staticDir, config_.loomUiDir, rootEqEc) && !rootEqEc;
 
         // Serve index.html at root.
         CROW_ROUTE(app, "/")
-        ([serveIndex]() { return serveIndex(); });
+        ([serveIndex, rootIsLoomUi](crow::response& res) {
+            if (rootIsLoomUi) {
+                res.code = 301;
+                res.add_header("Location", "/_loom/");
+            } else {
+                res = serveIndex();
+            }
+            res.end();
+        });
 
         // mapp Connect-compatible facade — additive REST + /api/1.0/pushchannel.
         // Registered alongside the legacy /ws and /api/* routes; shares core_.
         opcRest_ = std::make_unique<OpcUaRestServer>(core_);
         opcRest_->registerRoutes(app);
         opcRest_->startPump(config_.wsUpdateIntervalMs);
+
+        // Loom monitoring/config UI, always mounted at /_loom (regardless of what
+        // staticDir hosts). Same real-file-then-SPA-fallback behavior as the root
+        // app, but rooted at g_crowLoomUiDir. Registered BEFORE the "/<path>"
+        // catch-all so it wins (Crow resolves ambiguous matches to the lowest
+        // rule index, i.e. earliest-registered). The Loom frontend is built with
+        // Vite base '/_loom/', so its asset URLs resolve under this prefix. Crow
+        // auto-registers a 301 from the slash-less '/_loom' to '/_loom/'.
+        CROW_ROUTE(app, "/_loom/")
+        ([serveLoomIndex]() { return serveLoomIndex(); });
+        CROW_ROUTE(app, "/_loom/<path>")
+        ([serveLoomIndex](crow::response& res, const std::string& filePathPartial) {
+            std::error_code ec;
+            const std::string full = g_crowLoomUiDir + filePathPartial;
+            if (std::filesystem::is_regular_file(full, ec)) {
+                res.set_static_file_info_unsafe(full);
+                res.end();
+            } else {
+                res = serveLoomIndex();
+                res.end();
+            }
+        });
 
         // Generic static + SPA history fallback (replaces Crow's built-in static
         // catch-all, which we disabled via CROW_DISABLE_STATIC_DIR). For any GET:
