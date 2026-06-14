@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace crow::websocket { class connection; }
 
@@ -47,7 +48,7 @@ struct Session {
     std::chrono::steady_clock::time_point lastSeen{};
     double      timeoutMs = 30000.0;
     std::unordered_map<uint64_t, Subscription> subs;  // keyed by subscriptionId
-    crow::websocket::connection* pushConn = nullptr;
+    std::unordered_set<crow::websocket::connection*> pushConns;
 };
 
 class SessionManager {
@@ -126,12 +127,11 @@ public:
     void bindPushConn(uint64_t sessionId, crow::websocket::connection* c) {
         std::lock_guard lk(mu_);
         auto it = sessions_.find(sessionId);
-        if (it != sessions_.end()) it->second.pushConn = c;
+        if (it != sessions_.end()) it->second.pushConns.insert(c);
     }
     void unbindPushConn(crow::websocket::connection* c) {
         std::lock_guard lk(mu_);
-        for (auto& [id, s] : sessions_)
-            if (s.pushConn == c) s.pushConn = nullptr;
+        for (auto& [id, s] : sessions_) s.pushConns.erase(c);
     }
 
     /// Direct access for the pump thread, which already holds mutex().

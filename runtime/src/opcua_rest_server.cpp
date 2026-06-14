@@ -277,20 +277,29 @@ void OpcUaRestServer::pumpLoop() {
         for (auto it = sm_.sessions().begin(); it != sm_.sessions().end();) {
             auto& s = it->second;
             const double ageMs = static_cast<double>(duration_cast<milliseconds>(now - s.lastSeen).count());
-            if (!s.pushConn && ageMs > s.timeoutMs) it = sm_.sessions().erase(it);
+            if (s.pushConns.empty() && ageMs > s.timeoutMs) it = sm_.sessions().erase(it);
             else ++it;
         }
 
         {
             std::shared_lock<std::shared_mutex> ml(core_.moduleMutex());
             for (auto& [sid, sess] : sm_.sessions()) {
-                if (!sess.pushConn) continue;
+                if (sess.pushConns.empty()) continue;
+
+                // Coalesce ALL of this session's due subscriptions into ONE frame
+                // per connection per tick. Issuing multiple send_text() to the same
+                // socket in one tick races the runtime's async writes and crashes
+                // it (the legacy /ws path learned the same: one frame per
+                // connection). The client routes each notification by its (session-
+                // global) clientHandle, so combining subscriptions in one frame is
+                // safe; subscriptionId carries the first contributing subscription.
+                std::string notifs;
+                bool any = false;
+                uint64_t frameSubId = 0;
                 for (auto& [subId, sub] : sess.subs) {
                     if (now < sub.nextDue) continue;
                     sub.nextDue = now + milliseconds(static_cast<long long>(sub.publishingIntervalMs));
 
-                    std::string notifs;
-                    bool any = false;
                     for (auto& [mid, item] : sub.items) {
                         std::string val;
                         uint32_t st = readValueLocked(core_, item.parsed, val);
@@ -301,6 +310,7 @@ void OpcUaRestServer::pumpLoop() {
                         item.lastJson   = val;
 
                         if (any) notifs += ",";
+                        else frameSubId = subId;  // first subscription to contribute
                         notifs += "{\"clientHandle\":" + std::to_string(item.clientHandle) +
                                   ",\"value\":" + val +
                                   ",\"status\":{\"code\":" + std::to_string(st) +
@@ -308,13 +318,16 @@ void OpcUaRestServer::pumpLoop() {
                                   ",\"sourceTimestamp\":\"" + ts + "\",\"serverTimestamp\":\"" + ts + "\"}";
                         any = true;
                     }
-                    if (!any) continue;
-
-                    outbox.emplace_back(sess.pushConn,
-                        "{\"sessionId\":" + std::to_string(sid) +
-                        ",\"subscriptionId\":" + std::to_string(subId) +
-                        ",\"DataNotifications\":[" + notifs + "]}");
                 }
+                if (!any) continue;
+
+                // One frame, fanned out to every pushchannel on this session.
+                std::string frame =
+                    "{\"sessionId\":" + std::to_string(sid) +
+                    ",\"subscriptionId\":" + std::to_string(frameSubId) +
+                    ",\"DataNotifications\":[" + notifs + "]}";
+                for (auto* conn : sess.pushConns)
+                    outbox.emplace_back(conn, frame);
             }
         } // module lock released here
 
