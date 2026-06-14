@@ -45,15 +45,21 @@ namespace {
         return ec ? std::filesystem::path{} : p.parent_path();
     }
 
-    /// Resolve the Loom monitoring UI dir, served always at /_loom. Prefers the
-    /// install-relative location (<exe>/../share/loom/ui), independent of
-    /// --data-dir so it stays reachable when the data dir hosts a user app.
-    /// Falls back to <dataDir>/UI for dev/standby runs.
+    /// Resolve the Loom monitoring UI dir, served always at /_loom. Prefers an
+    /// install-relative location, independent of --data-dir so it stays reachable
+    /// when the data dir hosts a user app. Falls back to <dataDir>/UI for
+    /// dev/standby runs. Candidate order covers every shipping layout:
+    ///   <exe>/ui                — flat release tarball (binary + ui/ + modules/)
+    ///   <exe>/share/loom/ui     — flat tarball, share/-prefixed
+    ///   <exe>/../share/loom/ui  — `cmake --install` prefix (bin/loom + share/...)
+    ///   <exe>/../data/UI        — dev build tree (output/loom + data/UI symlink)
     std::string resolveLoomUiDir(const std::string& dataDir) {
         std::vector<std::filesystem::path> candidates;
         if (const auto exeDir = executableDir(); !exeDir.empty()) {
+            candidates.push_back(exeDir / "ui");
+            candidates.push_back(exeDir / "share" / "loom" / "ui");
             candidates.push_back(exeDir / ".." / "share" / "loom" / "ui");
-            candidates.push_back(exeDir / ".." / "data" / "UI"); // legacy install layout
+            candidates.push_back(exeDir / ".." / "data" / "UI");
         }
         const std::filesystem::path dataUi = std::filesystem::path(dataDir) / "UI";
         candidates.push_back(dataUi);
