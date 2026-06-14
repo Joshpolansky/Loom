@@ -1484,89 +1484,88 @@ void Server::start() {
                     }
                 }
 
-                // Build the always-on "live" payload + per-module runtime fragments
-                // under a shared lock so reloadModule can't concurrently mutate the
-                // module map or data engine.
-                std::string liveJson;
-                std::unordered_map<std::string, std::string> runtimeFragments; // id -> serialized runtime section
+                // Build per-module base fragments + runtime sections under a shared
+                // lock so reloadModule can't concurrently mutate the module map or
+                // data engine.  Each fragment is the module's open JSON content
+                // (no closing "}") so runtime data can be appended inline
+                // per-connection without re-serializing the common fields.
+                std::unordered_map<std::string, std::string> moduleFragments;
+                std::unordered_map<std::string, std::string> runtimeFragments;
+                std::string classesTail;
                 {
                     std::shared_lock<std::shared_mutex> lock(core_.moduleMutex());
 
-                    // Pre-serialize runtime sections only for ids someone subscribed to.
                     for (auto& id : runtimeIdsWanted) {
                         if (core_.loader().modules().find(id) == core_.loader().modules().end()) continue;
                         runtimeFragments.emplace(id, core_.dataEngine().readSection(id, DataSection::Runtime));
                     }
 
-                    liveJson = "{\"type\":\"live\",\"modules\":{";
-                    bool first = true;
                     for (auto& [id, mod] : core_.loader().modules()) {
-                        if (!first) liveJson += ",";
-                        liveJson += "\"" + id + "\":{";
-                        liveJson += "\"summary\":" + core_.dataEngine().readSection(id, DataSection::Summary);
-
+                        std::string frag = "\"" + id + "\":{";
+                        frag += "\"summary\":" + core_.dataEngine().readSection(id, DataSection::Summary);
                         auto* ts = core_.scheduler().taskState(id);
                         if (ts) {
-                            liveJson += ",\"stats\":{";
-                            liveJson += "\"cycleCount\":" + std::to_string(ts->cycleCount.load());
-                            liveJson += ",\"lastCycleTimeUs\":" + std::to_string(ts->lastCycleTimeUs.load());
-                            liveJson += ",\"maxCycleTimeUs\":" + std::to_string(ts->maxCycleTimeUs.load());
-                            liveJson += ",\"overrunCount\":" + std::to_string(ts->overrunCount.load());
-                            liveJson += ",\"lastJitterUs\":" + std::to_string(ts->lastJitterUs.load());
+                            frag += ",\"stats\":{";
+                            frag += "\"cycleCount\":" + std::to_string(ts->cycleCount.load());
+                            frag += ",\"lastCycleTimeUs\":" + std::to_string(ts->lastCycleTimeUs.load());
+                            frag += ",\"maxCycleTimeUs\":" + std::to_string(ts->maxCycleTimeUs.load());
+                            frag += ",\"overrunCount\":" + std::to_string(ts->overrunCount.load());
+                            frag += ",\"lastJitterUs\":" + std::to_string(ts->lastJitterUs.load());
                             // cycleHistory is intentionally NOT included here.
                             // Charts pull it via REST (/api/scheduler/modules/:id/history)
                             // because pushing it on every tick is far more bandwidth
                             // than any chart actually consumes.
-                            liveJson += "}";
+                            frag += "}";
                         }
-                        liveJson += "}";
-                        first = false;
+                        // No closing "}" — appended per-connection after optional runtime injection.
+                        moduleFragments.emplace(id, std::move(frag));
                     }
-                    liveJson += "},\"classes\":{";
+
+                    classesTail = "},\"classes\":{";
                     bool firstClass = true;
                     for (auto& cs : core_.scheduler().allClassStats()) {
-                        if (!firstClass) liveJson += ",";
-                        liveJson += "\"" + cs.name + "\":{";
-                        liveJson += "\"lastJitterUs\":" + std::to_string(cs.lastJitterUs);
-                        liveJson += ",\"lastCycleTimeUs\":" + std::to_string(cs.lastCycleTimeUs);
-                        liveJson += ",\"maxCycleTimeUs\":" + std::to_string(cs.maxCycleTimeUs);
-                        liveJson += ",\"tickCount\":" + std::to_string(cs.tickCount);
-                        liveJson += ",\"memberCount\":" + std::to_string(cs.memberCount);
-                        liveJson += ",\"lastTickStartMs\":" + std::to_string(cs.lastTickStartMs);
+                        if (!firstClass) classesTail += ",";
+                        classesTail += "\"" + cs.name + "\":{";
+                        classesTail += "\"lastJitterUs\":" + std::to_string(cs.lastJitterUs);
+                        classesTail += ",\"lastCycleTimeUs\":" + std::to_string(cs.lastCycleTimeUs);
+                        classesTail += ",\"maxCycleTimeUs\":" + std::to_string(cs.maxCycleTimeUs);
+                        classesTail += ",\"tickCount\":" + std::to_string(cs.tickCount);
+                        classesTail += ",\"memberCount\":" + std::to_string(cs.memberCount);
+                        classesTail += ",\"lastTickStartMs\":" + std::to_string(cs.lastTickStartMs);
                         // cycleHistory pulled via REST (/api/scheduler/classes/:name/history).
-                        liveJson += "}";
+                        classesTail += "}";
                         firstClass = false;
                     }
-                    liveJson += "}}";
+                    classesTail += "}}";
                 }
 
-                // Send. Binary frames so any non-UTF-8 byte in serialized fields
-                // (e.g. raw device strings) cannot kill the socket.
+                // One send_binary per connection — runtime data embedded inline for
+                // subscribers.  A single frame per connection means two rapid
+                // send_binary calls cannot race inside Crow's do_write / ASIO buffer
+                // chain.  Binary frames so non-UTF-8 bytes in device payloads
+                // cannot kill the socket.
+                static const std::unordered_set<std::string> kNoTopics;
                 std::lock_guard lock(wsMutex);
                 for (auto* conn : wsClients) {
-                    conn->send_binary(liveJson);
+                    const auto subsIt = liveSubs.find(conn);
+                    const auto& connTopics = (subsIt != liveSubs.end()) ? subsIt->second : kNoTopics;
 
-                    // Build this connection's runtime payload from its subscriptions.
-                    auto it = liveSubs.find(conn);
-                    if (it == liveSubs.end() || it->second.empty()) continue;
-                    std::string rtJson = "{\"type\":\"runtime\",\"modules\":{";
-                    bool firstMod = true;
-                    for (auto& topic : it->second) {
-                        if (topic.size() <= runtimeTopicPrefix.size() + runtimeTopicSuffix.size()) continue;
-                        if (topic.compare(0, runtimeTopicPrefix.size(), runtimeTopicPrefix) != 0) continue;
-                        if (topic.compare(topic.size() - runtimeTopicSuffix.size(), runtimeTopicSuffix.size(), runtimeTopicSuffix) != 0) continue;
-                        std::string id = topic.substr(runtimeTopicPrefix.size(),
-                                                      topic.size() - runtimeTopicPrefix.size() - runtimeTopicSuffix.size());
-                        auto fIt = runtimeFragments.find(id);
-                        if (fIt == runtimeFragments.end()) continue; // module gone or not loaded
-                        if (!firstMod) rtJson += ",";
-                        rtJson += "\"" + id + "\":{\"runtime\":" + fIt->second + "}";
-                        firstMod = false;
+                    std::string msg = "{\"type\":\"live\",\"modules\":{";
+                    bool first = true;
+                    for (auto& [id, frag] : moduleFragments) {
+                        if (!first) msg += ",";
+                        msg += frag;
+                        const std::string topic = runtimeTopicPrefix + id + runtimeTopicSuffix;
+                        if (connTopics.count(topic)) {
+                            auto fIt = runtimeFragments.find(id);
+                            if (fIt != runtimeFragments.end())
+                                msg += ",\"runtime\":" + fIt->second;
+                        }
+                        msg += "}";
+                        first = false;
                     }
-                    rtJson += "}}";
-                    if (!firstMod) {
-                        conn->send_binary(rtJson);
-                    }
+                    msg += classesTail;
+                    conn->send_binary(msg);
                 }
             }
         });
@@ -1659,6 +1658,12 @@ void Server::start() {
             res.end();
         });
 
+        // mapp Connect-compatible facade — additive REST + /api/1.0/pushchannel.
+        // Registered alongside the legacy /ws and /api/* routes; shares core_.
+        opcRest_ = std::make_unique<OpcUaRestServer>(core_);
+        opcRest_->registerRoutes(app);
+        opcRest_->startPump(config_.wsUpdateIntervalMs);
+
         spdlog::info("Starting HTTP server on {}:{}", config_.bindAddress, config_.port);
         app.bindaddr(config_.bindAddress)
            .port(config_.port)
@@ -1670,6 +1675,7 @@ void Server::start() {
         if (wsThread.joinable()) wsThread.join();
         watchRunning.store(false);
         if (watchThread.joinable()) watchThread.join();
+        if (opcRest_) opcRest_->stopPump();
     });
 }
 

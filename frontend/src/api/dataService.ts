@@ -204,13 +204,16 @@ export function useDataServiceProvider(): DataServiceState {
           if (!cur) continue;
           const newSummary = live.summary ?? cur.liveSummary;
           const newStats = live.stats;
+          const newRuntime = live.runtime !== undefined ? live.runtime : cur.liveRuntime;
           const summarySame = newSummary === cur.liveSummary || summaryEqual(newSummary, cur.liveSummary);
           const statsSame = shallowStatsEqual(newStats, cur.liveStats);
-          if (summarySame && statsSame) continue;
+          const runtimeSame = newRuntime === cur.liveRuntime || summaryEqual(newRuntime, cur.liveRuntime);
+          if (summarySame && statsSame && runtimeSame) continue;
           draft[id] = {
             ...cur,
             liveSummary: summarySame ? cur.liveSummary : newSummary,
             liveStats: statsSame ? cur.liveStats : newStats,
+            liveRuntime: runtimeSame ? cur.liveRuntime : newRuntime,
           };
           mutated = true;
         }

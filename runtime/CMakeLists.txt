@@ -32,6 +32,7 @@ add_library(loom_runtime STATIC
     src/data_store.cpp
     src/io_mapper.cpp
     src/server.cpp
+    src/opcua_rest_server.cpp
     src/oscilloscope.cpp
     src/module_watcher.cpp
 )

@@ -1,8 +1,10 @@
 #pragma once
 
+#include "loom/opcua_rest_server.h"
 #include "loom/runtime_core.h"
 
 #include <atomic>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -49,6 +51,11 @@ private:
 
     std::atomic<bool> running_{false};
     std::thread serverThread_;
+
+    /// mapp Connect-compatible facade (REST + /api/1.0/pushchannel). Additive;
+    /// shares core_ with the legacy /ws and /api/* routes. Created on the server
+    /// thread in start(); its pump is stopped in the post-run() cleanup block.
+    std::unique_ptr<OpcUaRestServer> opcRest_;
 };
 
 } // namespace loom
