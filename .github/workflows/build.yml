@@ -75,7 +75,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'   # @loupeteam/lux-connect requires Node >=24
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -93,6 +93,15 @@ jobs:
           # install step so install(DIRECTORY frontend/dist ...) populates
           # share/loom/ui. Without this the release would ship no UI.
           cd frontend
+          # Authenticate to GitHub Packages for the @loupeteam scope. The scope
+          # -> registry mapping is the committed frontend/.npmrc; append the
+          # token to that same (project) .npmrc so npm ci picks it up reliably.
+          # Ephemeral on the runner; never committed. GitHub Packages requires
+          # auth on tarball downloads too, hence always-auth.
+          {
+            echo "//npm.pkg.github.com/:_authToken=${PACKAGES_READ_TOKEN}"
+            echo "always-auth=true"
+          } >> .npmrc
           npm ci
           npm run build
 
