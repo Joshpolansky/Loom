@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import type { DragEvent } from 'react';
 import { getModuleData } from '../api/rest';
 import { useDataService } from '../api/dataService';
-// DataTree used via SectionPanel
+import { useVariable, useMachine } from '@loupeteam/lux-react';
+import { node } from '../api/machine';
 import { DataTree } from '../components/DataTree';
 import './WatchView.css';
 
@@ -10,7 +11,7 @@ type WatchEntry = { id: string; moduleId: string; path: string; label: string; e
 
 const LS_KEY = 'loom:watch:list';
 
-function makeId() { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`; }
+function makeId() { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`; }
 
 function loadSaved(): WatchEntry[] {
   try {
@@ -24,124 +25,89 @@ function loadSaved(): WatchEntry[] {
 
 function saveList(list: WatchEntry[]) { localStorage.setItem(LS_KEY, JSON.stringify(list)); }
 
+// ---------- one live-subscribed watch row ----------
+// Each row owns a single OPC-UA monitored item on the runtime field/subtree it
+// watches (per-leaf subscription). One hook per row keeps the Rules of Hooks
+// happy even though the watch list is dynamic.
+function WatchRow({
+  entry, onRemove, onDragStart, onDragOver, onDrop, onDragEnd,
+}: {
+  entry: WatchEntry;
+  onRemove: (id: string) => void;
+  onDragStart: (e: DragEvent, id: string) => void;
+  onDragOver: (e: DragEvent) => void;
+  onDrop: (e: DragEvent, id: string) => void;
+  onDragEnd: () => void;
+}) {
+  const [value] = useVariable<unknown>(node(entry.moduleId, 'runtime', entry.path));
+  const { writeVariable } = useMachine();
+
+  const pathLabel = entry.path ? `${entry.moduleId}/${entry.path}` : entry.moduleId;
+  const data: Record<string, unknown> = { [pathLabel]: value ?? null };
+
+  function handleWrite(localPath: string[], v: unknown) {
+    // localPath[0] is the display label; the rest is the pointer within the
+    // watched subtree. Absolute runtime pointer = entry.path + that remainder.
+    const ptr = [entry.path, ...localPath.slice(1)].filter(Boolean).join('/');
+    void writeVariable(node(entry.moduleId, 'runtime', ptr), v);
+  }
+
+  return (
+    <div
+      className="watch-row"
+      draggable
+      onDragStart={(e) => onDragStart(e, entry.id)}
+      onDragOver={onDragOver}
+      onDrop={(e) => onDrop(e, entry.id)}
+      onDragEnd={onDragEnd}
+    >
+      <div className="watch-root-header">
+        <div className="watch-meta">
+          <span className="drag-handle">≡</span>
+        </div>
+        <DataTree data={data} onChange={handleWrite} />
+        <div className="watch-actions">
+          <button className="watch-remove-button" onClick={() => onRemove(entry.id)}>✕</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function WatchView() {
-  
   const [showPicker, setShowPicker] = useState(false);
   const [watchList, setWatchList] = useState<WatchEntry[]>(() => loadSaved());
-  const [values, setValues] = useState<Record<string, { value: unknown; error?: string; ts?: number }>>({});
-  const wsRef = useRef<WebSocket | null>(null);
-  const subscribedRef = useRef<Set<string>>(new Set());
   const dragIdRef = useRef<string | null>(null);
-  const watchListRef = useRef(watchList);
-  const { writeField, modules } = useDataService();
+  const { modules } = useDataService();
 
-  useLayoutEffect(() => { watchListRef.current = watchList; });
-
-  // no-op: module tree picker will fetch module data on demand
-
-  // Connect to /ws/watch and manage subscriptions.
-  useEffect(() => {
-    let reconnectTimer: number | null = null;
-    // Permissive UTF-8 decoder for binary frames from the server.
-    const decoder = new TextDecoder('utf-8', { fatal: false });
-    function connect() {
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${proto}//${window.location.host}/ws/watch`);
-      ws.binaryType = 'arraybuffer';
-      ws.onopen = () => {
-        // subscribe all
-        for (const w of watchListRef.current) {
-          ws.send(JSON.stringify({ type: 'subscribe', id: w.id, moduleId: w.moduleId, path: w.path, expand: !!w.expand }));
-          subscribedRef.current.add(w.id);
-        }
-      };
-      ws.onclose = () => {
-        subscribedRef.current.clear();
-        reconnectTimer = window.setTimeout(connect, 2000);
-      };
-      ws.onerror = () => ws.close();
-      ws.onmessage = (ev) => {
-        try {
-          const text = typeof ev.data === 'string'
-            ? ev.data
-            : decoder.decode(ev.data as ArrayBuffer);
-          const msg = JSON.parse(text);
-          if (msg.type === 'watch' && Array.isArray(msg.values)) {
-            setValues(prev => {
-              const next = { ...prev };
-              for (const it of msg.values) {
-                next[it.id] = { value: it.value, error: it.error ?? undefined, ts: msg.ts };
-              }
-              return next;
-            });
-          }
-        } catch {
-          // ignore
-        }
-      };
-      wsRef.current = ws;
-    }
-
-    connect();
-    return () => {
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      wsRef.current?.close();
-    };
-  }, []); // only once
-
-  // Sync subscriptions when watchList changes
-  useEffect(() => {
-    saveList(watchList);
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const want = new Set(watchList.map(w => w.id));
-    // subscribe new
-    for (const w of watchList) {
-      if (!subscribedRef.current.has(w.id)) {
-        ws.send(JSON.stringify({ type: 'subscribe', id: w.id, moduleId: w.moduleId, path: w.path, expand: !!w.expand }));
-        subscribedRef.current.add(w.id);
-      }
-    }
-    // unsubscribe removed
-    for (const id of Array.from(subscribedRef.current)) {
-      if (!want.has(id)) {
-        ws.send(JSON.stringify({ type: 'unsubscribe', id }));
-        subscribedRef.current.delete(id);
-      }
-    }
-  }, [watchList]);
+  // Persist the list; subscriptions are managed per-row by useVariable.
+  useEffect(() => { saveList(watchList); }, [watchList]);
 
   const addEntries = useCallback((selected: WatchEntry[]) => {
-    const next = [...watchList];
-    for (const s of selected) {
-      const id = s.id ?? makeId();
-      next.push({ id, moduleId: s.moduleId, path: s.path, label: s.label ?? `${s.moduleId} ${s.path}`, expand: s.expand ?? false });
-    }
-    setWatchList(next);
+    setWatchList((prev) => {
+      const next = [...prev];
+      for (const s of selected) {
+        next.push({ id: s.id ?? makeId(), moduleId: s.moduleId, path: s.path, label: s.label ?? `${s.moduleId} ${s.path}`, expand: s.expand ?? false });
+      }
+      return next;
+    });
     setShowPicker(false);
-  }, [watchList]);
+  }, []);
 
   const removeEntry = useCallback((id: string) => {
-    setWatchList(prev => prev.filter(p => p.id !== id));
-    setValues(prev => { const n = { ...prev }; delete n[id]; return n; });
-    // unsubscribe immediately if WS open
-    const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'unsubscribe', id }));
-    subscribedRef.current.delete(id);
+    setWatchList((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
   const reorder = useCallback((fromId: string, toId: string | null) => {
-    setWatchList(prev => {
+    setWatchList((prev) => {
       const next = [...prev];
-      const fromIdx = next.findIndex(it => it.id === fromId);
+      const fromIdx = next.findIndex((it) => it.id === fromId);
       if (fromIdx === -1) return prev;
       const [item] = next.splice(fromIdx, 1);
-      if (!toId) {
-        next.push(item);
-      } else {
-        const toIdx = next.findIndex(it => it.id === toId);
-        if (toIdx === -1) next.push(item);
-        else next.splice(toIdx, 0, item);
+      if (!toId) { next.push(item); }
+      else {
+        const toIdx = next.findIndex((it) => it.id === toId);
+        if (toIdx === -1) next.push(item); else next.splice(toIdx, 0, item);
       }
       return next;
     });
@@ -161,8 +127,6 @@ export default function WatchView() {
     dragIdRef.current = null;
   }
 
-  // (renderValue removed — using SectionPanel/DataTree for rendering now)
-
   return (
     <div className="watch-page">
       <div className="watch-header">
@@ -173,50 +137,17 @@ export default function WatchView() {
       </div>
       <div className="watch-list">
         {watchList.length === 0 && <div className="watch-empty">No watched variables — click Add.</div>}
-        {watchList.map((w,) => {
-          const liveVal = values[w.id]?.value;
-          // fallback to module snapshot if live value not present
-          const moduleSnapshot = modules[w.moduleId]?.detail?.data?.runtime ?? modules[w.moduleId]?.liveRuntime ?? {};
-          let pathSegs = [w.moduleId, ...(w.path || '').split('/').filter(Boolean)];
-          const subtree = liveVal !== undefined ? liveVal : (pathSegs.length ? pathSegs.reduce((o: unknown, k: string) => (o && typeof o === 'object' ? (o as Record<string, unknown>)[k] : undefined), moduleSnapshot) : moduleSnapshot);
-          const isObject = subtree !== null && typeof subtree === 'object';
-          const wrapperKey = !isObject ? (pathSegs.length ? pathSegs[pathSegs.length - 1] : w.moduleId) : null;
-          const data = isObject ? (subtree as Record<string, unknown>) : { [wrapperKey as string]: subtree };
-          const panelData: Record<string, unknown> = {};
-          if(!isObject) pathSegs = pathSegs.slice(0, -1); // if scalar, remove last segment for cleaner display
-          const key = pathSegs.join('/');
-          panelData[key] = data;
-
-          function handleWrite(localPath: string[], value: unknown) {
-            const relativePath = localPath.slice(1); // if wrapperKey, remove it from path before sending to server
-            writeField(w.moduleId, 'runtime', relativePath, value);
-          }
-
-          return (
-            <div
-              key={w.id}
-              className="watch-row"
-              draggable
-              onDragStart={(e) => onDragStart(e, w.id)}
-              onDragOver={(e) => onDragOver(e)}
-              onDrop={(e) => onDrop(e, w.id)}
-              onDragEnd={() => { dragIdRef.current = null; }}
-            >
-              <div className="watch-root-header">
-                <div className="watch-meta">
-                  <span className="drag-handle">≡</span>
-                </div>
-                <DataTree 
-                    data={panelData}
-                    onChange={handleWrite}
-                />
-                <div className="watch-actions">
-                  <button className="watch-remove-button" onClick={() => removeEntry(w.id)}>✕</button>
-                </div>
-              </div>
-            </div>
-          );
-        })}
+        {watchList.map((w) => (
+          <WatchRow
+            key={w.id}
+            entry={w}
+            onRemove={removeEntry}
+            onDragStart={onDragStart}
+            onDragOver={onDragOver}
+            onDrop={onDrop}
+            onDragEnd={() => { dragIdRef.current = null; }}
+          />
+        ))}
       </div>
 
       {showPicker && (
@@ -229,8 +160,6 @@ export default function WatchView() {
     </div>
   );
 }
-
-// Scalar editor removed — SectionPanel/DataTree handles editing
 
 // ---------- Picker modal: select modules and whole structures ----------
 function PickerModal({ modules, onConfirm, onCancel }: { modules: Record<string, unknown>; onConfirm: (sel: WatchEntry[]) => void; onCancel: () => void }) {
@@ -261,8 +190,6 @@ function PickerModal({ modules, onConfirm, onCancel }: { modules: Record<string,
     setSelectedPaths(prev => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
   }
 
-  // Note: picker will render the existing DataTree in pickerMode below.
-
   const confirm = () => {
     const out: WatchEntry[] = [];
     for (const key of selectedPaths) {
@@ -280,31 +207,27 @@ function PickerModal({ modules, onConfirm, onCancel }: { modules: Record<string,
         <div className="picker-body picker-body-split">
           <div className="picker-modules">
             {moduleIds.length === 0 && <div className="picker-empty">No modules available</div>}
-            {moduleIds.map(mid => {
-              return (
-                <div key={mid} className={`picker-module-row ${mid === selectedModule ? 'active' : ''}`} onClick={() => setSelectedModule(mid)}>
-                  <div className="picker-module-id">{mid}</div>
-                </div>
-              );
-            })}
+            {moduleIds.map(mid => (
+              <div key={mid} className={`picker-module-row ${mid === selectedModule ? 'active' : ''}`} onClick={() => setSelectedModule(mid)}>
+                <div className="picker-module-id">{mid}</div>
+              </div>
+            ))}
           </div>
           <div className="picker-tree-area">
             <div className="picker-tree-header">{selectedModule ?? 'Select a module'}</div>
             <div className="picker-tree-body">
               {loading && <div>Loading…</div>}
               {!loading && selectedModule && moduleData && (
-                <div>
-                  <div className="picker-tree-root">
-                    <DataTree
-                      data={{ "/": moduleData }}
-                      pickerMode={true}
-                      selectedKeys={new Set(Array.from(selectedPaths).filter(k => k.startsWith(`${selectedModule}::`)).map(k => k.slice(selectedModule.length + 2)))}
-                      onSelect={(pathArr) => {
-                        const path = pathArr.join('/').replace(/\/+/g, '/'); // normalize multiple slashes
-                        togglePath(selectedModule, path);
-                      }}
-                    />
-                  </div>
+                <div className="picker-tree-root">
+                  <DataTree
+                    data={{ '/': moduleData }}
+                    pickerMode={true}
+                    selectedKeys={new Set(Array.from(selectedPaths).filter(k => k.startsWith(`${selectedModule}::`)).map(k => k.slice(selectedModule.length + 2)))}
+                    onSelect={(pathArr) => {
+                      const path = pathArr.join('/').replace(/\/+/g, '/');
+                      togglePath(selectedModule, path);
+                    }}
+                  />
                 </div>
               )}
             </div>

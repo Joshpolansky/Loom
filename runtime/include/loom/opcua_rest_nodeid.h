@@ -75,7 +75,9 @@ struct ParsedNode {
         Module,           ///< ns=1;s=/module/<id>
         Section,          ///< ns=1;s=/module/<id>/<section>  (fieldPointer empty)
         Field,            ///< ns=1;s=/module/<id>/<section>/<field-pointer>
-        Scheduler,        ///< ns=1;s=/scheduler/...
+        ModuleStats,      ///< ns=1;s=/module/<id>/stats  (scheduler task stats, read-only)
+        Scheduler,        ///< ns=1;s=/scheduler  or  /scheduler/classes  (container; fieldPointer = "" or "classes")
+        ClassStats,       ///< ns=1;s=/scheduler/classes/<name>  (read-only; name in moduleId)
         Foreign,          ///< anything else (e.g. ns=5;..., ns=0;i=2255)
     } kind = Kind::Foreign;
 
@@ -91,12 +93,17 @@ inline ParsedNode parseNodeId(std::string_view nodeId) {
     ParsedNode p;
     p.raw = std::string(nodeId);
 
-    constexpr std::string_view kPrefix = "ns=1;s=";
-    if (nodeId.substr(0, kPrefix.size()) != kPrefix) {
+    // Locate our "ns=1;s=" marker. We accept it even if the client prepended its
+    // own variable scope (e.g. B&R's "::AsGlobalPV:") to the NodeId — LuxConnect
+    // wraps plain variable names that way, and our absolute NodeId is still
+    // self-contained after the marker.
+    constexpr std::string_view kMarker = "ns=1;s=";
+    size_t mpos = nodeId.find(kMarker);
+    if (mpos == std::string_view::npos) {
         p.kind = ParsedNode::Kind::Foreign;
         return p;
     }
-    std::string_view path = nodeId.substr(kPrefix.size());
+    std::string_view path = nodeId.substr(mpos + kMarker.size());
     if (path.empty() || path[0] != '/') {
         p.kind = ParsedNode::Kind::Foreign;
         return p;
@@ -117,6 +124,7 @@ inline ParsedNode parseNodeId(std::string_view nodeId) {
         if (seg.size() == 1) { p.kind = ParsedNode::Kind::ModuleContainer; return p; }
         p.moduleId = std::string(seg[1]);
         if (seg.size() == 2) { p.kind = ParsedNode::Kind::Module; return p; }
+        if (seg[2] == "stats" && seg.size() == 3) { p.kind = ParsedNode::Kind::ModuleStats; return p; }
         auto sec = sectionFromName(seg[2]);
         if (!sec) { p.kind = ParsedNode::Kind::Foreign; return p; }
         p.section = *sec;
@@ -131,7 +139,21 @@ inline ParsedNode parseNodeId(std::string_view nodeId) {
         return p;
     }
 
-    if (seg[0] == "scheduler") { p.kind = ParsedNode::Kind::Scheduler; return p; }
+    if (seg[0] == "scheduler") {
+        if (seg.size() == 1) { p.kind = ParsedNode::Kind::Scheduler; return p; }       // /scheduler
+        if (seg[1] == "classes") {
+            if (seg.size() == 2) {                                                     // /scheduler/classes
+                p.kind = ParsedNode::Kind::Scheduler;
+                p.fieldPointer = "classes";
+                return p;
+            }
+            p.moduleId = std::string(seg[2]);                                          // /scheduler/classes/<name>
+            p.kind = ParsedNode::Kind::ClassStats;
+            return p;
+        }
+        p.kind = ParsedNode::Kind::Foreign;
+        return p;
+    }
 
     p.kind = ParsedNode::Kind::Foreign;
     return p;
