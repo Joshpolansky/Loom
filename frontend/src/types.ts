@@ -51,22 +51,6 @@ export interface ClassInfo {
   modules?: string[];
 }
 
-export interface LiveUpdate {
-  type: 'live';
-  modules: Record<
-    string,
-    {
-      // `runtime` is injected inline into the `live` frame, but only for modules
-      // the connection subscribed to via `module/<id>/runtime`. Optional because
-      // unsubscribed modules omit it.
-      runtime?: Record<string, unknown>;
-      summary?: Record<string, unknown>;
-      stats?: { cycleCount: number; lastCycleTimeUs: number; maxCycleTimeUs: number; overrunCount: number; lastJitterUs: number };
-    }
-  >;
-  classes?: Record<string, ClassLiveStats>;
-}
-
 export interface ServiceCallResult {
   ok: boolean;
   response?: unknown;

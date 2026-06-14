@@ -20,6 +20,7 @@ namespace { std::string g_crowStaticDir = "./data/UI/"; }
 #include <mutex>
 #include <set>
 #include <shared_mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -1657,6 +1658,28 @@ void Server::start() {
             res.set_static_file_info(g_crowStaticDir + "index.html");
             res.end();
         });
+
+        // SPA history fallback: client-side router paths must return index.html
+        // (a hard navigation / refresh on these would otherwise hit the static
+        // file route and 404). These explicit routes are registered before the
+        // catch-all static endpoint (Crow adds that during run()), so they win;
+        // /assets/* and other real files still fall through to static serving.
+        // Add new top-level client routes here when the frontend router gains them.
+        {
+            auto serveIndex = []() {
+                std::ifstream f(g_crowStaticDir + "index.html", std::ios::binary);
+                std::stringstream ss;
+                ss << f.rdbuf();
+                crow::response res(200, ss.str());
+                res.add_header("Content-Type", "text/html; charset=utf-8");
+                return res;
+            };
+            for (const char* path : { "/scheduler", "/bus", "/scope", "/watch", "/mappings" }) {
+                app.route_dynamic(path)([serveIndex]() { return serveIndex(); });
+            }
+            CROW_ROUTE(app, "/module/<string>")
+            ([serveIndex](const std::string&) { return serveIndex(); });
+        }
 
         // mapp Connect-compatible facade — additive REST + /api/1.0/pushchannel.
         // Registered alongside the legacy /ws and /api/* routes; shares core_.

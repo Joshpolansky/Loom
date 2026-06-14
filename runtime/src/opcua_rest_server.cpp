@@ -117,6 +117,29 @@ uint32_t readValueLocked(RuntimeCore& core, const ParsedNode& p, std::string& ou
         outValue = lm->instance->readSection(p.section);
         return kGood;
     }
+    if (p.kind == ParsedNode::Kind::ModuleStats) {
+        const auto* ts = core.scheduler().taskState(p.moduleId);
+        if (!ts) return kBadNodeIdUnknown;
+        outValue = "{\"cycleCount\":" + std::to_string(ts->cycleCount.load()) +
+                   ",\"lastCycleTimeUs\":" + std::to_string(ts->lastCycleTimeUs.load()) +
+                   ",\"maxCycleTimeUs\":" + std::to_string(ts->maxCycleTimeUs.load()) +
+                   ",\"overrunCount\":" + std::to_string(ts->overrunCount.load()) +
+                   ",\"lastJitterUs\":" + std::to_string(ts->lastJitterUs.load()) + "}";
+        return kGood;
+    }
+    if (p.kind == ParsedNode::Kind::ClassStats) {
+        for (auto& cs : core.scheduler().allClassStats()) {
+            if (cs.name != p.moduleId) continue;
+            outValue = "{\"lastJitterUs\":" + std::to_string(cs.lastJitterUs) +
+                       ",\"lastCycleTimeUs\":" + std::to_string(cs.lastCycleTimeUs) +
+                       ",\"maxCycleTimeUs\":" + std::to_string(cs.maxCycleTimeUs) +
+                       ",\"tickCount\":" + std::to_string(cs.tickCount) +
+                       ",\"memberCount\":" + std::to_string(cs.memberCount) +
+                       ",\"lastTickStartMs\":" + std::to_string(cs.lastTickStartMs) + "}";
+            return kGood;
+        }
+        return kBadNodeIdUnknown;
+    }
     return kBadNodeIdUnknown;
 }
 
@@ -156,7 +179,8 @@ std::string buildReadBody(RuntimeCore& core, const std::string& nodeDecoded, con
                    "\"serverTimestamp\":\"" + ts + "\"}";
         }
         st = kBadNodeIdUnknown;
-    } else if (p.kind == ParsedNode::Kind::Field || p.kind == ParsedNode::Kind::Section) {
+    } else if (p.kind == ParsedNode::Kind::Field || p.kind == ParsedNode::Kind::Section ||
+               p.kind == ParsedNode::Kind::ModuleStats || p.kind == ParsedNode::Kind::ClassStats) {
         std::shared_lock<std::shared_mutex> ml(core.moduleMutex());
         st = readValueLocked(core, p, val);
     } else {
@@ -332,9 +356,13 @@ void OpcUaRestServer::registerRoutes(crow::SimpleApp& app) {
             return r;
         });
 
-    // GET/HEAD/DELETE/PATCH /api/1.0/opcua/sessions/<id>
+    // GET/DELETE/PATCH /api/1.0/opcua/sessions/<id>
+    // HEAD (the LuxConnect keep-alive) is intentionally NOT listed: Crow
+    // auto-derives HEAD from the GET route (runs the GET handler with the body
+    // stripped). Registering HEAD explicitly returned 503 on keep-alive and put
+    // the client into a reconnect loop.
     CROW_ROUTE(app, "/api/1.0/opcua/sessions/<string>")
-        .methods("GET"_method, "HEAD"_method, "DELETE"_method, "PATCH"_method, "OPTIONS"_method)
+        .methods("GET"_method, "DELETE"_method, "PATCH"_method, "OPTIONS"_method)
         ([&sm](const crow::request& req, const std::string& sidStr) {
             if (isOptions(req)) return jsonResp(204, "");
             uint64_t sid = 0;
@@ -347,10 +375,9 @@ void OpcUaRestServer::registerRoutes(crow::SimpleApp& app) {
                 sm.touch(sid);
                 return jsonResp(200, "{\"code\":0,\"string\":\"Good\"}");
             }
-            // GET / HEAD — keep-alive.
+            // GET (and HEAD via Crow's auto-derive) — keep-alive.
             if (!sm.hasSession(sid)) return jsonResp(404, "{\"error\":\"no such session\"}");
             sm.touch(sid);
-            if (req.method == "HEAD"_method) return jsonResp(204, "");
             return jsonResp(200, "{\"id\":" + std::to_string(sid) + ",\"status\":\"connected\"}");
         });
 
@@ -409,6 +436,7 @@ void OpcUaRestServer::registerRoutes(crow::SimpleApp& app) {
 
             if (p.kind == ParsedNode::Kind::Root) {
                 addRef("/module", "module", "Object");
+                addRef("/scheduler", "scheduler", "Object");
             } else if (p.kind == ParsedNode::Kind::ModuleContainer) {
                 std::shared_lock<std::shared_mutex> ml(core.moduleMutex());
                 for (auto& [id, mod] : core.loader().modules())
@@ -416,6 +444,15 @@ void OpcUaRestServer::registerRoutes(crow::SimpleApp& app) {
             } else if (p.kind == ParsedNode::Kind::Module) {
                 for (const char* s : { "config", "recipe", "runtime", "summary" })
                     addRef("/module/" + p.moduleId + "/" + s, s, "Object");
+                addRef("/module/" + p.moduleId + "/stats", "stats", "Variable");
+            } else if (p.kind == ParsedNode::Kind::Scheduler) {
+                if (p.fieldPointer.empty()) {
+                    addRef("/scheduler/classes", "classes", "Object");
+                } else if (p.fieldPointer == "classes") {
+                    std::shared_lock<std::shared_mutex> ml(core.moduleMutex());
+                    for (auto& cs : core.scheduler().allClassStats())
+                        addRef("/scheduler/classes/" + cs.name, cs.name, "Variable");
+                }
             } else if (p.kind == ParsedNode::Kind::Section || p.kind == ParsedNode::Kind::Field) {
                 std::string json;
                 {

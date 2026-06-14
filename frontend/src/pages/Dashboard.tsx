@@ -3,11 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
+import { useVariable } from '@loupeteam/lux-react';
+import { node } from '../api/machine';
 import { useDataService } from '../api/dataService';
 import type { ModuleState } from '../api/dataService';
 import { getSchedulerClasses, instantiateModule, getAvailableModules } from '../api/rest';
 import { useClassesHistory } from '../api/useHistory';
-import type { ClassInfo } from '../types';
+import type { ClassInfo, ModuleStats } from '../types';
 import type { AvailableModule } from '../api/rest';
 import { MODULE_STATES } from '../types';
 import { DataTree } from '../components/DataTree';
@@ -29,7 +31,11 @@ function statusColor(state: number) {
 // ─── Module card ─────────────────────────────────────────────────────────────
 function ModuleCard({ mod }: { mod: ModuleState }) {
   const navigate = useNavigate();
-  const { info, liveStats } = mod;
+  const { info } = mod;
+  // Live cycle stats + summary stream from the OPC-UA facade; fall back to the
+  // REST-polled info.stats for the first paint before the subscription warms up.
+  const [liveStats] = useVariable<ModuleStats>(node(info.id, 'stats'));
+  const [summary] = useVariable<Record<string, unknown>>(node(info.id, 'summary'));
   const stats = liveStats ?? info.stats;
   const cycleMs = stats ? (stats.lastCycleTimeUs / 1000).toFixed(3) : '—';
   const jitterMs = stats ? (stats.lastJitterUs / 1000).toFixed(3) : '—';
@@ -48,7 +54,7 @@ function ModuleCard({ mod }: { mod: ModuleState }) {
         <div>Jitter: <b>{jitterMs}ms</b></div>
       </div>
       <div>
-        <DataTree data={mod.liveSummary ?? {}} onChange={undefined} compact={true} />
+        <DataTree data={summary ?? {}} onChange={undefined} compact={true} />
       </div>
     </div>
   );
