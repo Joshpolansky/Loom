@@ -15,11 +15,11 @@ export const machine = new OpcuaMachine({
   enableWebSocket: true,
 });
 
-// NodeId helpers for the Loom facade address space (ns=1;s=/...). These are
-// absolute NodeIds, so LuxReact's useVariable() uses them verbatim (no scope).
 export function node(moduleId: string, section: string, path?: string): string {
   const base = `ns=1;s=/module/${moduleId}/${section}`;
-  return path ? `${base}/${path}` : base;
+  if (!path) return base;
+  const clean = path.replace(/^\/+/,'').replace(/\/+/g, '/');
+  return clean ? `${base}/${clean}` : base;
 }
 
 export function classNode(name: string): string {
