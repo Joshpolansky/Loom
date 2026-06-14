@@ -24,8 +24,14 @@ export default function ModuleDetail() {
   const { modules, fetchDetail } = useDataService();
   const { connectionState, writeVariable } = useMachine();
   // Live sections stream from the OPC-UA facade (one monitored item per section).
+  // All four sections subscribe so the panel reflects changes made by ANY client
+  // (this UI, the GarageBot HMI, REST, etc.) within a pump interval — not just on
+  // mount/reload. The pump diffs a live read per tick, so unchanged sections cost
+  // nothing on the wire.
   const [liveRuntime] = useVariable<Record<string, unknown>>(id ? node(id, 'runtime') : '');
   const [liveSummary] = useVariable<Record<string, unknown>>(id ? node(id, 'summary') : '');
+  const [liveConfig]  = useVariable<Record<string, unknown>>(id ? node(id, 'config')  : '');
+  const [liveRecipe]  = useVariable<Record<string, unknown>>(id ? node(id, 'recipe')  : '');
   const [activeTab, setActiveTab] = useState<ActiveTab>('runtime');
   const activeSection: DataSection = activeTab;
   const [reloading, setReloading] = useState(false);
@@ -129,8 +135,12 @@ export default function ModuleDetail() {
   const connected = connectionState === ConnectionState.CONNECTED;
 
   const sectionData = (section: DataSection): Record<string, unknown> => {
-    if (section === 'runtime') return liveRuntime ?? {};
+    // Prefer the live (subscribed) value; fall back to the initial REST detail
+    // until the first push arrives.
+    if (section === 'runtime') return liveRuntime ?? detail?.data.runtime ?? {};
     if (section === 'summary') return liveSummary ?? detail?.data.summary ?? {};
+    if (section === 'config')  return liveConfig  ?? detail?.data.config  ?? {};
+    if (section === 'recipe')  return liveRecipe  ?? detail?.data.recipe  ?? {};
     return detail?.data[section] ?? {};
   };
 
