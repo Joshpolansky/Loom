@@ -1,6 +1,6 @@
 # Loom
 
-A modular C++ PLC-like runtime that dynamically loads shared library based module plugins, reflects user-defined data structs via [glaze](https://github.com/stephenberry/glaze), and exposes them over REST/WebSocket for a React debug IDE frontend.
+A modular C++ PLC-like runtime that dynamically loads shared library based module plugins, reflects user-defined data structs via [glaze](https://github.com/stephenberry/glaze), and exposes them over REST/WebSocket. It ships a React debug IDE frontend and a **mapp Connect-compatible, OPC-UA-style facade** (`/api/1.0`) so standard OPC-UA web clients — e.g. [LuxConnect](https://github.com/loupeteam) — can browse, read/write, and subscribe to live data.
 
 ---
 
@@ -9,12 +9,15 @@ A modular C++ PLC-like runtime that dynamically loads shared library based modul
 ```
 ┌────────────────────────────────────────────────────────┐
 │  React Frontend  (Vite + TypeScript)                   │
-│  DataService (REST polling + WebSocket)                │
-│  DataTree  │  SectionPanel  │  ModuleCard              │
+│  LuxConnect + LuxReact (live data via OPC-UA facade)   │
+│  DataTree  │  SectionPanel  │  REST for metadata        │
 └───────────────────────┬────────────────────────────────┘
-                        │ REST / WebSocket (Crow)
+            REST + /api/1.0/pushchannel (WebSocket), Crow
 ┌───────────────────────┴────────────────────────────────┐
-│  loom::Server  (HTTP + /ws)                             │
+│  loom::Server  (HTTP)                                    │
+│   ├─ OpcUaRestServer  — mapp Connect facade /api/1.0     │
+│   │                     (REST + /pushchannel)            │
+│   └─ legacy /api/* REST + /ws, /ws/watch                 │
 ├────────────────────────────────────────────────────────┤
 │  loom::ModuleLoader  ·  loom::Scheduler                  │
 │  loom::DataEngine  ·  loom::DataStore                    │
@@ -24,6 +27,8 @@ A modular C++ PLC-like runtime that dynamically loads shared library based modul
 │  ExampleMotor  │  Sequencer  │  StackLight  │  PneumaticActuator │
 └────────────────────────────────────────────────────────┘
 ```
+
+The frontend consumes **live** module data (runtime, summary, scheduler stats) through the OPC-UA facade via LuxConnect/LuxReact; metadata, history, config save/load, bus, oscilloscope, and IO mappings still use the plain `/api/*` REST endpoints.
 
 ### Layers
 
@@ -44,6 +49,7 @@ A modular C++ PLC-like runtime that dynamically loads shared library based modul
 | **Config** | Module parameters | Saved to disk, restored on boot |
 | **Recipe** | Product / batch parameters | Loaded on user selection |
 | **Runtime** | Live process variables | Not persisted; read/written every cycle |
+| **Summary** | Read-only dashboard snapshot | Not persisted; recomputed each cycle |
 
 ---
 
@@ -64,7 +70,7 @@ just build       # Install deps, configure, and build the C++ runtime
 just run         # Start the runtime — open http://localhost:8080
 ```
 
-The runtime serves the built UI at `/` and the REST/WebSocket API at `/api` and `/ws`. No separate web server needed.
+The runtime serves the built UI at `/`, the legacy REST/WebSocket API at `/api` and `/ws`, and the mapp Connect-compatible OPC-UA facade at `/api/1.0` (REST + `/api/1.0/pushchannel`). No separate web server needed. Client-side routes (e.g. `/module/<id>`) are served `index.html` so deep links and refreshes work.
 
 ### Frontend development (live reload)
 
@@ -228,12 +234,48 @@ auto fut = callServiceAsync("other_module", "command", payload);
 | GET | `/api/bus/services` | Registered RPC services |
 | POST | `/api/bus/call/:service` | Call a service — `:service` can contain slashes (e.g. `motor/set_speed`) |
 
-### WebSocket
+### WebSocket (legacy)
+
+The original live channels. The bundled frontend no longer uses these — it streams via the OPC-UA facade `/api/1.0/pushchannel` (below) — but they remain for compatibility.
 
 | Endpoint | Description |
 |----------|-------------|
 | `/ws` | Live runtime data + scheduler stats stream |
 | `/ws/watch` | Subscribe to specific field paths (`{ type, id, moduleId, path }`) |
+
+---
+
+## mapp Connect / OPC-UA facade (`/api/1.0`)
+
+An OPC-UA-style projection of the runtime, wire-compatible with B&R's mapp Connect REST API, so OPC-UA web clients (e.g. LuxConnect/LuxReact) connect with no custom code. This is the channel the bundled frontend uses for all live data. Auth is a minimal stand-in (no real authentication yet).
+
+**Address space** — nodes are addressed by string NodeId `ns=1;s=<path>`:
+
+| Path | Node |
+|------|------|
+| `/module` | Container of all modules |
+| `/module/<id>` | Container of one module's sections |
+| `/module/<id>/<section>` | A whole section (`config`/`recipe`/`runtime`/`summary`) |
+| `/module/<id>/<section>/<field>` | A leaf / sub-tree within a section (JSON-pointer path) |
+| `/module/<id>/stats` | Scheduler task stats (read-only) |
+| `/scheduler/classes/<name>` | Per-class scheduler stats (read-only) |
+
+**Endpoints** (the subset of mapp Connect exercised by LuxConnect):
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/1.0/auth` | Reachability / stand-in auth |
+| POST | `/api/1.0/opcua/sessions` | Create a session → `{ id }` |
+| GET/DELETE/PATCH | `/api/1.0/opcua/sessions/:id` | Session info / delete / keep-alive (HEAD derives from GET) |
+| GET/PUT | `…/nodes/:nodeId/attributes/:attr` | Read / write a node value |
+| POST | `…/nodes/$batch` | Batch read/write |
+| GET | `…/nodes/:nodeId/references` | Browse children |
+| POST/DELETE | `…/subscriptions[/:subId]` | Create / delete a subscription |
+| POST | `…/subscriptions/:subId/monitoredItems` (+ `/$batch`) | Add monitored items |
+| DELETE | `…/subscriptions/:subId/monitoredItems/:itemId` | Remove a monitored item |
+| WS | `/api/1.0/pushchannel?sessionid=:id` | DataChange notification stream |
+
+Change detection runs on a sample thread; a missing node reports `Bad_NodeIdUnknown`, so subscriptions transparently recover as modules load/unload.
 
 ---
 
@@ -256,3 +298,5 @@ auto fut = callServiceAsync("other_module", "command", payload);
 | [Crow](https://github.com/CrowCpp/Crow) | HTTP / WebSocket server |
 | [spdlog](https://github.com/gabime/spdlog) | Structured logging |
 | [GTest](https://github.com/google/googletest) | Unit testing |
+
+**Frontend:** React + Vite + TypeScript, with [`@loupeteam/lux-connect`](https://www.npmjs.com/package/@loupeteam/lux-connect) (OPC-UA client) and [`@loupeteam/lux-react`](https://www.npmjs.com/package/@loupeteam/lux-react) (React hooks) consuming the `/api/1.0` facade; [recharts](https://recharts.org) for history charts.
