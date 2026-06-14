@@ -81,10 +81,16 @@ jobs:
 
       - name: Build frontend UI
         shell: bash
+        env:
+          PACKAGES_READ_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN }}
         run: |
           set -euo pipefail
-          # The Loom monitoring UI (served at /_loom) must be built before the
-          # CMake install step so install(DIRECTORY frontend/dist ...) populates
+          if [ -z "${PACKAGES_READ_TOKEN}" ]; then
+            echo "::error::PACKAGES_READ_TOKEN secret is not set — the @loupeteam UI deps cannot be installed. Add a repo secret with a token that has read:packages." >&2
+            exit 1
+          fi
+          # Build the Loom monitoring UI (served at /_loom) before the CMake
+          # install step so install(DIRECTORY frontend/dist ...) populates
           # share/loom/ui. Without this the release would ship no UI.
           cd frontend
           npm ci
