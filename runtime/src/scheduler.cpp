@@ -516,6 +516,7 @@ bool Scheduler::updateClassDef(const ClassDef& def) {
     auto it = classes_.find(def.name);
     if (it == classes_.end()) return false;
     it->second->def = def;
+    it->second->publishTunables();  // make period/spin/priority/affinity live (no restart)
     // Also update the master config so subsequent classConfigs() reflects the change.
     for (auto& cd : schedCfg_.classes) {
         if (cd.name == def.name) { cd = def; return true; }
@@ -663,30 +664,60 @@ static void storeSample(MetricRingBuffer& buffer, std::mutex& bufferMx,
 // ---- classLoop ------------------------------------------------------------------
 
 void Scheduler::classLoop(ClassRunnerState& runner) {
-    const auto& def      = runner.def;
-    const auto  periodUs = std::chrono::microseconds(
-        static_cast<int64_t>(def.period_us));
-    const auto  periodNs = static_cast<int64_t>(def.period_us) * 1000LL;
+    const auto& def = runner.def;
 
-    spdlog::info("Class '{}' thread started (period: {}µs, priority: {})",
-                 def.name, def.period_us, def.priority);
+    // Seed the live tunables from def, then read them every tick so period / spin /
+    // priority / affinity edits (updateClassDef) take effect WITHOUT a restart.
+    runner.livePeriodUs.store(def.period_us, std::memory_order_relaxed);
+    runner.liveSpinUs.store(def.spin_us, std::memory_order_relaxed);
+    runner.livePriority.store(def.priority, std::memory_order_relaxed);
+    runner.liveCpuAffinity.store(def.cpu_affinity, std::memory_order_relaxed);
+    uint64_t seenEpoch = runner.cfgEpoch.load(std::memory_order_acquire);
 
-    const uint32_t periodUsUint = static_cast<uint32_t>(periodUs.count());
+    // (Re)apply the OS thread policy from the live atomics — runs at start and
+    // whenever the epoch advances. period/spin are read per-tick in the loop;
+    // priority/affinity need a syscall, so they're only re-applied on change.
+    auto applyPolicy = [&]() {
+        const uint32_t perUs = static_cast<uint32_t>(runner.livePeriodUs.load());
+        const int      pr    = runner.livePriority.load();
 #ifdef __APPLE__
-    applyMachRealtimePolicy(periodUsUint, def.priority);
+        applyMachRealtimePolicy(perUs, pr);
 #elif defined(_WIN32)
-    applyWindowsRealtimePolicy(periodUsUint, def.priority);
+        applyWindowsRealtimePolicy(perUs, pr);
 #elif defined(__linux__)
+        applyLinuxRealtimePolicy(perUs, pr);
+#endif
+        applyAffinityPolicy(runner.liveCpuAffinity.load());
+    };
+
+#if defined(__linux__)
     if (isPreemptRT())
         spdlog::info("PREEMPT_RT kernel detected for class '{}'", def.name);
-    applyLinuxRealtimePolicy(periodUsUint, def.priority);
 #endif
-    applyAffinityPolicy(def.cpu_affinity);
+    applyPolicy();
 
-    const auto kSpinThreshold = std::chrono::microseconds(def.spin_us);
+    auto periodUs       = std::chrono::microseconds(runner.livePeriodUs.load());
+    auto periodNs       = static_cast<int64_t>(runner.livePeriodUs.load()) * 1000LL;
+    auto kSpinThreshold = std::chrono::microseconds(runner.liveSpinUs.load());
+
+    spdlog::info("Class '{}' thread started (period: {}µs, priority: {})",
+                 def.name, periodUs.count(), runner.livePriority.load());
+
     auto nextWake = std::chrono::steady_clock::now();
 
     while (runner.running.load()) {
+        // --- Pick up live tunable changes (no restart needed) ---
+        periodUs       = std::chrono::microseconds(runner.livePeriodUs.load());
+        periodNs       = static_cast<int64_t>(runner.livePeriodUs.load()) * 1000LL;
+        kSpinThreshold = std::chrono::microseconds(runner.liveSpinUs.load());
+        if (uint64_t ep = runner.cfgEpoch.load(std::memory_order_acquire); ep != seenEpoch) {
+            seenEpoch = ep;
+            applyPolicy();  // priority/affinity changed — re-apply OS thread policy
+            spdlog::info("Class '{}' tunables updated live (period {}µs, spin {}µs, prio {}, affinity {})",
+                         def.name, periodUs.count(), kSpinThreshold.count(),
+                         runner.livePriority.load(), runner.liveCpuAffinity.load());
+        }
+
         // --- Spin to hit exact wake time (only if spin_us > 0) ---
         while (kSpinThreshold.count() > 0 && std::chrono::steady_clock::now() < nextWake) {
             // busy-wait the final stretch
@@ -759,7 +790,7 @@ void Scheduler::classLoop(ClassRunnerState& runner) {
             if (elapsed.count() > curMax)
                 member.state->maxCycleTimeUs.store(elapsed.count());
 
-            int64_t periodUsInt = static_cast<int64_t>(def.period_us);
+            int64_t periodUsInt = periodUs.count();  // live period (see top of loop)
             if (elapsed.count() > periodUsInt) {
                 member.state->overrunCount.fetch_add(1);
                 if (member.state->overrunCount.load() % 100 == 1) {
@@ -809,8 +840,19 @@ void Scheduler::classLoop(ClassRunnerState& runner) {
 
         // --- Timing: advance deadline and sleep until close to it ---
         nextWake += periodUs;
-        auto sleepUntil = nextWake - kSpinThreshold;
         auto now = std::chrono::steady_clock::now();
+        // Missed-deadline guard: if the cycle ran long, or the OS timer/scheduler
+        // delayed us past the next deadline, DON'T burst-run to catch up. Bursting
+        // produces back-to-back cycles with dt≈0 and per-cycle jitter≈period —
+        // common at 1ms on Windows, where sleep_until can overshoot ~1ms (a whole
+        // period). Skip the missed ticks and re-anchor to the next deadline on the
+        // period grid so consecutive cycles are always ~period (or a clean multiple)
+        // apart, never zero.
+        if (nextWake <= now) {
+            auto behind = std::chrono::duration_cast<std::chrono::microseconds>(now - nextWake);
+            nextWake += periodUs * (behind / periodUs + 1);
+        }
+        auto sleepUntil = nextWake - kSpinThreshold;
         if (sleepUntil > now) {
             std::this_thread::sleep_until(sleepUntil);
         }
@@ -906,6 +948,13 @@ void Scheduler::isolatedLoop(LoadedModule& mod, TaskConfig config, TaskState& st
         }
 
         nextWake += periodUs;
+        auto nowAfter = std::chrono::steady_clock::now();
+        // Missed-deadline guard (see classLoop): skip missed ticks and re-anchor to
+        // the period grid instead of bursting, so consecutive cycles are never dt≈0.
+        if (nextWake <= nowAfter) {
+            auto behind = std::chrono::duration_cast<std::chrono::microseconds>(nowAfter - nextWake);
+            nextWake += periodUs * (behind / periodUs + 1);
+        }
         auto sleepUntil = nextWake - kSpinThreshold;
         if (sleepUntil > std::chrono::steady_clock::now()) {
             std::this_thread::sleep_until(sleepUntil);
