@@ -7,6 +7,7 @@ add_executable(loom_tests
     test_tag_table.cpp
     test_runtime_heap.cpp
     test_command_integration.cpp
+    test_command_fb.cpp
 )
 
 target_include_directories(loom_tests PRIVATE

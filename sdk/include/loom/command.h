@@ -125,29 +125,58 @@ protected:
 
     /// Apply one cycle's outcome. On a rising edge `submitted` is the submit
     /// result (possibly null on failure); otherwise pass nullptr.
+    ///
+    /// PLCopen output rules enforced here:
+    ///  - exactly one of {busy, done, command_aborted, error} is set at a time
+    ///    (active may accompany busy);
+    ///  - dropping Execute does NOT cancel — the block stays Busy until the
+    ///    command finishes, then surfaces the terminal result;
+    ///  - a terminal result (Done/Aborted/Error) is held while Execute is high,
+    ///    and is visible for >= 1 cycle even if Execute is already low;
+    ///  - a rising Execute starts a new command, superseding any held result.
     void commit(bool rising_edge, std::shared_ptr<CommandStatus> submitted) {
-        if (rising_edge) {
+        // A held terminal result clears only on a LATER call with Execute low, so
+        // it was visible for at least the cycle it was set in.
+        if (state_ == State::Held && !execute) {
+            clearOutputs();
+            status_.reset();
+            state_ = State::Idle;
+        }
+
+        if (rising_edge) {  // new command supersedes anything currently shown
+            clearOutputs();
             status_ = std::move(submitted);
-            if (!status_) { reset(); error = true; error_id = kErrSubmitFailed; }
+            if (!status_) { error = true; error_id = kErrSubmitFailed; state_ = State::Held; }
+            else          { busy = true;  state_ = State::Running; }
         }
-        if (status_) {
-            const CommandStatus& s = *status_;
-            busy = s.busy.load(); active = s.active.load(); done = s.done.load();
-            command_aborted = s.aborted.load(); error = s.error.load();
-            error_id = s.error_id.load();
+
+        if (state_ == State::Running && status_) {
+            const CmdPhase ph = status_->phase.load();
+            if (ph == CmdPhase::Done || ph == CmdPhase::Aborted || ph == CmdPhase::Error) {
+                clearOutputs();
+                done            = (ph == CmdPhase::Done);
+                command_aborted = (ph == CmdPhase::Aborted);
+                error           = (ph == CmdPhase::Error);
+                error_id        = status_->error_id.load();
+                state_          = State::Held;
+            } else {              // still in flight (Queued / Active / None)
+                busy   = true;
+                active = (ph == CmdPhase::Active);
+            }
         }
-        if (!execute && prev_execute_) reset();  // PLCopen: outputs reset on Execute drop
+
         prev_execute_ = execute;
     }
 
-    void reset() {
-        status_.reset();
+private:
+    enum class State { Idle, Running, Held };
+    void clearOutputs() {
         busy = active = done = command_aborted = error = false;
         error_id = 0;
     }
-
     std::shared_ptr<CommandStatus> status_;
-    bool prev_execute_ = false;
+    bool  prev_execute_ = false;
+    State state_        = State::Idle;
 };
 
 } // namespace loom
