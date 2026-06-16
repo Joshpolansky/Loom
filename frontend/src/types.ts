@@ -51,23 +51,6 @@ export interface ClassInfo {
   modules?: string[];
 }
 
-export interface LiveUpdate {
-  type: 'live';
-  modules: Record<
-    string,
-    {
-      // `runtime` is no longer sent on the broadcast `live` frame; it now
-      // arrives via a separate `{type:"runtime"}` frame to subscribers only.
-      // Kept optional here for backward compatibility with any external
-      // consumers; the dataService no longer reads it from `live`.
-      runtime?: Record<string, unknown>;
-      summary?: Record<string, unknown>;
-      stats?: { cycleCount: number; lastCycleTimeUs: number; maxCycleTimeUs: number; overrunCount: number; lastJitterUs: number };
-    }
-  >;
-  classes?: Record<string, ClassLiveStats>;
-}
-
 export interface ServiceCallResult {
   ok: boolean;
   response?: unknown;

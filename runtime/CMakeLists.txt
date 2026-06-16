@@ -32,6 +32,7 @@ add_library(loom_runtime STATIC
     src/data_store.cpp
     src/io_mapper.cpp
     src/server.cpp
+    src/opcua_rest_server.cpp
     src/oscilloscope.cpp
     src/module_watcher.cpp
 )
@@ -104,6 +105,15 @@ install(TARGETS loom
 
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/frontend/dist/"
     DESTINATION data/UI
+    OPTIONAL
+)
+
+# Loom monitoring UI, served always at /_loom. Installed to a dedicated location
+# (<prefix>/share/loom/ui) so the runtime can find it relative to the binary
+# regardless of --data-dir (which may host a user app). resolveLoomUiDir() in
+# run.cpp looks here first via <exe>/../share/loom/ui.
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/frontend/dist/"
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/loom/ui
     OPTIONAL
 )
 

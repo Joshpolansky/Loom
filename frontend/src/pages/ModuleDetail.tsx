@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { reloadModule, reassignModuleClass, getSchedulerClasses, saveModuleConfig, loadModuleConfig, saveModuleRecipe, loadModuleRecipe, removeModuleInstance } from '../api/rest';
+import { useVariable, useMachine, ConnectionState } from '@loupeteam/lux-react';
+import { node } from '../api/machine';
 import { useDataService } from '../api/dataService';
 import { SectionPanel } from '../components/SectionPanel';
 import { ModuleRpcPanel } from '../components/ModuleRpcPanel';
@@ -19,7 +21,17 @@ type ActiveTab = DataSection;
 export default function ModuleDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { modules, wsConnected, fetchDetail, writeField, subscribeRuntime, unsubscribeRuntime } = useDataService();
+  const { modules, fetchDetail } = useDataService();
+  const { connectionState, writeVariable } = useMachine();
+  // Live sections stream from the OPC-UA facade (one monitored item per section).
+  // All four sections subscribe so the panel reflects changes made by ANY client
+  // (this UI, the GarageBot HMI, REST, etc.) within a pump interval — not just on
+  // mount/reload. The pump diffs a live read per tick, so unchanged sections cost
+  // nothing on the wire.
+  const [liveRuntime] = useVariable<Record<string, unknown>>(id ? node(id, 'runtime') : '');
+  const [liveSummary] = useVariable<Record<string, unknown>>(id ? node(id, 'summary') : '');
+  const [liveConfig]  = useVariable<Record<string, unknown>>(id ? node(id, 'config')  : '');
+  const [liveRecipe]  = useVariable<Record<string, unknown>>(id ? node(id, 'recipe')  : '');
   const [activeTab, setActiveTab] = useState<ActiveTab>('runtime');
   const activeSection: DataSection = activeTab;
   const [reloading, setReloading] = useState(false);
@@ -37,15 +49,6 @@ export default function ModuleDetail() {
   useEffect(() => {
     if (id) fetchDetail(id);
   }, [id, fetchDetail]);
-
-  // Subscribe to this module's live runtime stream while the page is open.
-  // The server only ships per-module runtime data over /ws to subscribers,
-  // so without this we'd only ever see the initial REST snapshot.
-  useEffect(() => {
-    if (!id) return;
-    subscribeRuntime(id);
-    return () => { unsubscribeRuntime(id); };
-  }, [id, subscribeRuntime, unsubscribeRuntime]);
 
   // Fetch available classes for the selector
   useEffect(() => {
@@ -128,11 +131,16 @@ export default function ModuleDetail() {
 
   if (!mod) return <div className="loading">Loading…</div>;
 
-  const { info, detail, liveRuntime, liveSummary } = mod;
+  const { info, detail } = mod;
+  const connected = connectionState === ConnectionState.CONNECTED;
 
   const sectionData = (section: DataSection): Record<string, unknown> => {
-    if (section === 'runtime') return liveRuntime;
-    if (section === 'summary') return liveSummary;
+    // Prefer the live (subscribed) value; fall back to the initial REST detail
+    // until the first push arrives.
+    if (section === 'runtime') return liveRuntime ?? detail?.data.runtime ?? {};
+    if (section === 'summary') return liveSummary ?? detail?.data.summary ?? {};
+    if (section === 'config')  return liveConfig  ?? detail?.data.config  ?? {};
+    if (section === 'recipe')  return liveRecipe  ?? detail?.data.recipe  ?? {};
     return detail?.data[section] ?? {};
   };
 
@@ -146,7 +154,7 @@ export default function ModuleDetail() {
           <span className={`state-badge state-${info.state}`}>
             {MODULE_STATES[info.state] ?? 'Unknown'}
           </span>
-          <span className={`ws-indicator ${wsConnected ? 'connected' : 'disconnected'}`} />
+          <span className={`ws-indicator ${connected ? 'connected' : 'disconnected'}`} title={`OPC-UA: ${connectionState}`} />
         </h2>
         <div className="detail-actions">
           {classes.length > 0 && (
@@ -223,7 +231,7 @@ export default function ModuleDetail() {
           section={activeSection}
           onWrite={
             !SECTIONS.find((s) => s.key === activeSection)?.readOnly && id
-              ? (path, value) => writeField(id, activeSection, path, value)
+              ? (path, value) => { void writeVariable(node(id, activeSection, path.join('/')), value); }
               : undefined
           }
         />

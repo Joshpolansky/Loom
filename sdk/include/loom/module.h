@@ -523,6 +523,13 @@ protected:
     // still serialising against the cyclic write.
     mutable std::shared_mutex runtimeMutex_;
 
+    // Guard config_/recipe_ and their lazy TagTables the same way. A client may
+    // subscribe to config/recipe fields (the facade pump then reads them every
+    // tick) while another writes them via REST/OPC-UA — without these, the
+    // concurrent read/write (and the lazy TagTable rebuild) is a data race.
+    mutable std::shared_mutex configMutex_;
+    mutable std::shared_mutex recipeMutex_;
+
     void ensureTagTableBuilt(DataSection section = DataSection::Runtime) const {
         if (section == DataSection::Config && (!config_tags_ || config_tags_->needs_refresh()))
             config_tags_.emplace(const_cast<Config&>(config_));
@@ -566,8 +573,16 @@ public:
 
     std::string readSection(DataSection section) const override {
         switch (section) {
-            case DataSection::Config:  return glz::write_json(config_).value_or("{}");
-            case DataSection::Recipe:  return glz::write_json(recipe_).value_or("{}");
+            case DataSection::Config: {
+                Config snap;
+                { std::shared_lock lk(configMutex_); snap = config_; }
+                return glz::write_json(snap).value_or("{}");
+            }
+            case DataSection::Recipe: {
+                Recipe snap;
+                { std::shared_lock lk(recipeMutex_); snap = recipe_; }
+                return glz::write_json(snap).value_or("{}");
+            }
             case DataSection::Runtime: {
                 // Copy runtime_ and snapshot extension values under a brief shared
                 // lock, then serialize + splice outside the lock.
@@ -605,12 +620,14 @@ public:
 
         switch (section) {
             case DataSection::Config:  {
+                std::unique_lock lk(configMutex_);
                 glz::context ctx{};
                 auto ec = glz::read<kPermissiveReadOpts>(config_, json, ctx);
                 if (!ec) refreshTraceCache(DataSection::Config);
                 return !ec;
             }
             case DataSection::Recipe:  {
+                std::unique_lock lk(recipeMutex_);
                 glz::context ctx{};
                 auto ec = glz::read<kPermissiveReadOpts>(recipe_, json, ctx);
                 if (!ec) refreshTraceCache(DataSection::Recipe);
@@ -665,12 +682,14 @@ public:
         std::string key(name);
         if (!key.empty() && key.front() == '/') key.erase(0, 1);
         if (section == DataSection::Config) {
+            std::unique_lock lk(configMutex_);
             ensureTagTableBuilt(DataSection::Config);
             bool ok = config_tags_->write_json(key, json);
             if (ok) refreshTraceCache(DataSection::Config);
             return ok;
         }
         if (section == DataSection::Recipe) {
+            std::unique_lock lk(recipeMutex_);
             ensureTagTableBuilt(DataSection::Recipe);
             bool ok = recipe_tags_->write_json(key, json);
             if (ok) refreshTraceCache(DataSection::Recipe);
@@ -696,11 +715,15 @@ public:
         std::string key(name);
         if (!key.empty() && key.front() == '/') key.erase(0, 1);
         if (section == DataSection::Config) {
+            // unique_lock: ensureTagTableBuilt() may rebuild config_tags_, so even
+            // this read path mutates shared state and must be exclusive.
+            std::unique_lock lk(configMutex_);
             ensureTagTableBuilt(DataSection::Config);
             return key.empty() ? std::optional<std::string>(glz::write_json(config_).value_or("{}"))
                                : config_tags_->read_json(key);
         }
         if (section == DataSection::Recipe) {
+            std::unique_lock lk(recipeMutex_);
             ensureTagTableBuilt(DataSection::Recipe);
             return key.empty() ? std::optional<std::string>(glz::write_json(recipe_).value_or("{}"))
                                : recipe_tags_->read_json(key);

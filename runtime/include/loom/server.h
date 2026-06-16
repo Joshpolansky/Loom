@@ -1,8 +1,10 @@
 #pragma once
 
+#include "loom/opcua_rest_server.h"
 #include "loom/runtime_core.h"
 
 #include <atomic>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -14,6 +16,9 @@ struct ServerConfig {
     std::string bindAddress = "127.0.0.1";
     int wsUpdateIntervalMs = 100;
     std::string staticDir = "./data/UI";
+    /// Loom monitoring/config UI, served always at /_loom. Resolved independently
+    /// of staticDir so it stays reachable even when staticDir hosts a user app.
+    std::string loomUiDir = "./data/UI";
 };
 
 /// REST + WebSocket server — thin translation layer over RuntimeCore.
@@ -49,6 +54,11 @@ private:
 
     std::atomic<bool> running_{false};
     std::thread serverThread_;
+
+    /// mapp Connect-compatible facade (REST + /api/1.0/pushchannel). Additive;
+    /// shares core_ with the legacy /ws and /api/* routes. Created on the server
+    /// thread in start(); its pump is stopped in the post-run() cleanup block.
+    std::unique_ptr<OpcUaRestServer> opcRest_;
 };
 
 } // namespace loom

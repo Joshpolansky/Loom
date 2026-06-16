@@ -72,6 +72,39 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'   # @loupeteam/lux-connect requires Node >=24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend UI
+        shell: bash
+        env:
+          PACKAGES_READ_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PACKAGES_READ_TOKEN}" ]; then
+            echo "::error::PACKAGES_READ_TOKEN secret is not set — the @loupeteam UI deps cannot be installed. Add a repo secret with a token that has read:packages." >&2
+            exit 1
+          fi
+          # Build the Loom monitoring UI (served at /_loom) before the CMake
+          # install step so install(DIRECTORY frontend/dist ...) populates
+          # share/loom/ui. Without this the release would ship no UI.
+          cd frontend
+          # Authenticate to GitHub Packages for the @loupeteam scope. The scope
+          # -> registry mapping is the committed frontend/.npmrc; append the
+          # token to that same (project) .npmrc so npm ci picks it up reliably.
+          # Ephemeral on the runner; never committed. GitHub Packages requires
+          # auth on tarball downloads too, hence always-auth.
+          {
+            echo "//npm.pkg.github.com/:_authToken=${PACKAGES_READ_TOKEN}"
+            echo "always-auth=true"
+          } >> .npmrc
+          npm ci
+          npm run build
+
       - name: Cache Conan packages
         uses: actions/cache@v4
         with:
@@ -170,6 +203,16 @@ jobs:
           fi
           if [ -d install/lib ]; then
             cp -r install/lib "${STAGE}/lib"
+          fi
+
+          # Loom monitoring UI (served at /_loom). CMake installs it to
+          # share/loom/ui; ship it flat as ui/ next to the binary so the runtime
+          # finds it install-relative (resolveLoomUiDir checks <exe>/ui first).
+          if [ -d install/share/loom/ui ]; then
+            cp -r install/share/loom/ui "${STAGE}/ui"
+          else
+            echo "::error::Loom UI not present in install/share/loom/ui — frontend build step likely failed" >&2
+            exit 1
           fi
 
           # Drop in companion files so a tarball is informative on its own.

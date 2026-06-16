@@ -1,73 +1,31 @@
-# React + TypeScript + Vite
+# Loom Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+The React + TypeScript (Vite) debug IDE for the [Loom](../README.md) runtime.
 
-Currently, two official plugins are available:
+## Data layer
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Live data flows over the runtime's mapp Connect / OPC-UA facade (`/api/1.0`) via
+[`@loupeteam/lux-connect`](https://www.npmjs.com/package/@loupeteam/lux-connect) +
+[`@loupeteam/lux-react`](https://www.npmjs.com/package/@loupeteam/lux-react):
 
-## React Compiler
+- `src/api/machine.ts` — one `OpcuaMachine` pointed at the same origin, plus the
+  `node()` / `classNode()` NodeId helpers (`ns=1;s=/module/<id>/<section>[/field]`).
+- `App.tsx` wraps the tree in `<MachineProvider>`; the connection indicator reads
+  `useMachine().connectionState`.
+- Components read live values with `useVariable(node(...))` (whole-section
+  subscriptions for the tree views; per-leaf in WatchView) and write with
+  `useMachine().writeVariable`.
+- `src/api/dataService.ts` is now just a REST metadata store (module list +
+  per-module detail/schema). Everything without an OPC-UA equivalent — history
+  charts, config/recipe save/load, instantiate/reload, bus, oscilloscope, IO
+  mappings — stays on the plain `/api/*` REST helpers in `src/api/rest.ts`.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Develop
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install        # once
+npm run dev        # Vite on :5173, proxies /api + /api/1.0 to the runtime on :8080
+npm run build      # emits dist/ — `just frontend` / `just run` serve this
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+Run the Loom runtime (`just run`) alongside `npm run dev` so the facade is available.

@@ -6,6 +6,8 @@ import SchedulerView from './pages/SchedulerView';
 import OscilloscopeView from './pages/OscilloscopeView';
 import WatchView from './pages/WatchView';
 import { MappingView } from './pages/MappingView';
+import { MachineProvider, useMachine, ConnectionState } from '@loupeteam/lux-react';
+import { machine } from './api/machine';
 import { DataServiceContext, useDataServiceProvider } from './api/dataService';
 import './App.css';
 
@@ -61,6 +63,8 @@ function IconMapping() {
 
 function AppProviders() {
   const dataService = useDataServiceProvider();
+  const { connectionState } = useMachine();
+  const connected = connectionState === ConnectionState.CONNECTED;
   return (
     <DataServiceContext.Provider value={dataService}>
       <div className="app">
@@ -78,8 +82,8 @@ function AppProviders() {
             <NavLink to="/mappings"><IconMapping /><span>Mappings</span></NavLink>
           </nav>
           <span
-            className={`ws-indicator ${dataService.wsConnected ? 'connected' : 'disconnected'}`}
-            title={dataService.wsConnected ? 'WebSocket connected' : 'WebSocket disconnected'}
+            className={`ws-indicator ${connected ? 'connected' : 'disconnected'}`}
+            title={`OPC-UA: ${connectionState}`}
           />
         </header>
         <main className="app-main">
@@ -100,8 +104,10 @@ function AppProviders() {
 
 function App() {
   return (
-    <BrowserRouter>
-      <AppProviders />
+    <BrowserRouter basename="/_loom">
+      <MachineProvider id="loom" machine={machine}>
+        <AppProviders />
+      </MachineProvider>
     </BrowserRouter>
   );
 }

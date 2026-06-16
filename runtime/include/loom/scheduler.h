@@ -217,6 +217,26 @@ private:
         MetricRingBuffer cycleHistory;
         mutable std::mutex cycleHistoryMx;
 
+        // Live-tunable mirrors of def fields. The class thread reads these every
+        // tick (lock-free) so period/spin/priority/affinity edits take effect
+        // WITHOUT restarting the class. cfgEpoch bumps on any change; the loop
+        // re-applies the OS thread policy (priority/affinity) only when it moves.
+        std::atomic<int>      livePeriodUs{10000};
+        std::atomic<int>      liveSpinUs{0};
+        std::atomic<int>      livePriority{50};
+        std::atomic<int>      liveCpuAffinity{-1};
+        std::atomic<uint64_t> cfgEpoch{0};
+
+        /// Publish def's tunables to the live atomics and bump the epoch. Call
+        /// after mutating def (under the scheduler mutex).
+        void publishTunables() {
+            livePeriodUs.store(def.period_us, std::memory_order_relaxed);
+            liveSpinUs.store(def.spin_us, std::memory_order_relaxed);
+            livePriority.store(def.priority, std::memory_order_relaxed);
+            liveCpuAffinity.store(def.cpu_affinity, std::memory_order_relaxed);
+            cfgEpoch.fetch_add(1, std::memory_order_release);
+        }
+
         ClassRunnerState() = default;
         ClassRunnerState(const ClassRunnerState&) = delete;
         ClassRunnerState& operator=(const ClassRunnerState&) = delete;

@@ -6,8 +6,15 @@
 #include <crow/logging.h>
 #include <string>
 namespace { std::string g_crowStaticDir = "./data/UI/"; }
+// Loom monitoring UI dir (normalized: trailing '/'), served at /_loom. Set in
+// start() from config_.loomUiDir; read by the /_loom routes below.
+namespace { std::string g_crowLoomUiDir = "./data/UI/"; }
 #define CROW_STATIC_DIRECTORY g_crowStaticDir
 #define CROW_STATIC_ENDPOINT "/<path>"
+// We register our own "/<path>" catch-all in Server::start() that serves real
+// files and falls back to index.html (generic SPA hosting). Disable Crow's
+// built-in static catch-all so it doesn't duplicate/override that route.
+#define CROW_DISABLE_STATIC_DIR
 
 #include <crow.h>
 #include <glaze/glaze.hpp>
@@ -20,6 +27,7 @@ namespace { std::string g_crowStaticDir = "./data/UI/"; }
 #include <mutex>
 #include <set>
 #include <shared_mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -1484,89 +1492,88 @@ void Server::start() {
                     }
                 }
 
-                // Build the always-on "live" payload + per-module runtime fragments
-                // under a shared lock so reloadModule can't concurrently mutate the
-                // module map or data engine.
-                std::string liveJson;
-                std::unordered_map<std::string, std::string> runtimeFragments; // id -> serialized runtime section
+                // Build per-module base fragments + runtime sections under a shared
+                // lock so reloadModule can't concurrently mutate the module map or
+                // data engine.  Each fragment is the module's open JSON content
+                // (no closing "}") so runtime data can be appended inline
+                // per-connection without re-serializing the common fields.
+                std::unordered_map<std::string, std::string> moduleFragments;
+                std::unordered_map<std::string, std::string> runtimeFragments;
+                std::string classesTail;
                 {
                     std::shared_lock<std::shared_mutex> lock(core_.moduleMutex());
 
-                    // Pre-serialize runtime sections only for ids someone subscribed to.
                     for (auto& id : runtimeIdsWanted) {
                         if (core_.loader().modules().find(id) == core_.loader().modules().end()) continue;
                         runtimeFragments.emplace(id, core_.dataEngine().readSection(id, DataSection::Runtime));
                     }
 
-                    liveJson = "{\"type\":\"live\",\"modules\":{";
-                    bool first = true;
                     for (auto& [id, mod] : core_.loader().modules()) {
-                        if (!first) liveJson += ",";
-                        liveJson += "\"" + id + "\":{";
-                        liveJson += "\"summary\":" + core_.dataEngine().readSection(id, DataSection::Summary);
-
+                        std::string frag = "\"" + id + "\":{";
+                        frag += "\"summary\":" + core_.dataEngine().readSection(id, DataSection::Summary);
                         auto* ts = core_.scheduler().taskState(id);
                         if (ts) {
-                            liveJson += ",\"stats\":{";
-                            liveJson += "\"cycleCount\":" + std::to_string(ts->cycleCount.load());
-                            liveJson += ",\"lastCycleTimeUs\":" + std::to_string(ts->lastCycleTimeUs.load());
-                            liveJson += ",\"maxCycleTimeUs\":" + std::to_string(ts->maxCycleTimeUs.load());
-                            liveJson += ",\"overrunCount\":" + std::to_string(ts->overrunCount.load());
-                            liveJson += ",\"lastJitterUs\":" + std::to_string(ts->lastJitterUs.load());
+                            frag += ",\"stats\":{";
+                            frag += "\"cycleCount\":" + std::to_string(ts->cycleCount.load());
+                            frag += ",\"lastCycleTimeUs\":" + std::to_string(ts->lastCycleTimeUs.load());
+                            frag += ",\"maxCycleTimeUs\":" + std::to_string(ts->maxCycleTimeUs.load());
+                            frag += ",\"overrunCount\":" + std::to_string(ts->overrunCount.load());
+                            frag += ",\"lastJitterUs\":" + std::to_string(ts->lastJitterUs.load());
                             // cycleHistory is intentionally NOT included here.
                             // Charts pull it via REST (/api/scheduler/modules/:id/history)
                             // because pushing it on every tick is far more bandwidth
                             // than any chart actually consumes.
-                            liveJson += "}";
+                            frag += "}";
                         }
-                        liveJson += "}";
-                        first = false;
+                        // No closing "}" — appended per-connection after optional runtime injection.
+                        moduleFragments.emplace(id, std::move(frag));
                     }
-                    liveJson += "},\"classes\":{";
+
+                    classesTail = "},\"classes\":{";
                     bool firstClass = true;
                     for (auto& cs : core_.scheduler().allClassStats()) {
-                        if (!firstClass) liveJson += ",";
-                        liveJson += "\"" + cs.name + "\":{";
-                        liveJson += "\"lastJitterUs\":" + std::to_string(cs.lastJitterUs);
-                        liveJson += ",\"lastCycleTimeUs\":" + std::to_string(cs.lastCycleTimeUs);
-                        liveJson += ",\"maxCycleTimeUs\":" + std::to_string(cs.maxCycleTimeUs);
-                        liveJson += ",\"tickCount\":" + std::to_string(cs.tickCount);
-                        liveJson += ",\"memberCount\":" + std::to_string(cs.memberCount);
-                        liveJson += ",\"lastTickStartMs\":" + std::to_string(cs.lastTickStartMs);
+                        if (!firstClass) classesTail += ",";
+                        classesTail += "\"" + cs.name + "\":{";
+                        classesTail += "\"lastJitterUs\":" + std::to_string(cs.lastJitterUs);
+                        classesTail += ",\"lastCycleTimeUs\":" + std::to_string(cs.lastCycleTimeUs);
+                        classesTail += ",\"maxCycleTimeUs\":" + std::to_string(cs.maxCycleTimeUs);
+                        classesTail += ",\"tickCount\":" + std::to_string(cs.tickCount);
+                        classesTail += ",\"memberCount\":" + std::to_string(cs.memberCount);
+                        classesTail += ",\"lastTickStartMs\":" + std::to_string(cs.lastTickStartMs);
                         // cycleHistory pulled via REST (/api/scheduler/classes/:name/history).
-                        liveJson += "}";
+                        classesTail += "}";
                         firstClass = false;
                     }
-                    liveJson += "}}";
+                    classesTail += "}}";
                 }
 
-                // Send. Binary frames so any non-UTF-8 byte in serialized fields
-                // (e.g. raw device strings) cannot kill the socket.
+                // One send_binary per connection — runtime data embedded inline for
+                // subscribers.  A single frame per connection means two rapid
+                // send_binary calls cannot race inside Crow's do_write / ASIO buffer
+                // chain.  Binary frames so non-UTF-8 bytes in device payloads
+                // cannot kill the socket.
+                static const std::unordered_set<std::string> kNoTopics;
                 std::lock_guard lock(wsMutex);
                 for (auto* conn : wsClients) {
-                    conn->send_binary(liveJson);
+                    const auto subsIt = liveSubs.find(conn);
+                    const auto& connTopics = (subsIt != liveSubs.end()) ? subsIt->second : kNoTopics;
 
-                    // Build this connection's runtime payload from its subscriptions.
-                    auto it = liveSubs.find(conn);
-                    if (it == liveSubs.end() || it->second.empty()) continue;
-                    std::string rtJson = "{\"type\":\"runtime\",\"modules\":{";
-                    bool firstMod = true;
-                    for (auto& topic : it->second) {
-                        if (topic.size() <= runtimeTopicPrefix.size() + runtimeTopicSuffix.size()) continue;
-                        if (topic.compare(0, runtimeTopicPrefix.size(), runtimeTopicPrefix) != 0) continue;
-                        if (topic.compare(topic.size() - runtimeTopicSuffix.size(), runtimeTopicSuffix.size(), runtimeTopicSuffix) != 0) continue;
-                        std::string id = topic.substr(runtimeTopicPrefix.size(),
-                                                      topic.size() - runtimeTopicPrefix.size() - runtimeTopicSuffix.size());
-                        auto fIt = runtimeFragments.find(id);
-                        if (fIt == runtimeFragments.end()) continue; // module gone or not loaded
-                        if (!firstMod) rtJson += ",";
-                        rtJson += "\"" + id + "\":{\"runtime\":" + fIt->second + "}";
-                        firstMod = false;
+                    std::string msg = "{\"type\":\"live\",\"modules\":{";
+                    bool first = true;
+                    for (auto& [id, frag] : moduleFragments) {
+                        if (!first) msg += ",";
+                        msg += frag;
+                        const std::string topic = runtimeTopicPrefix + id + runtimeTopicSuffix;
+                        if (connTopics.count(topic)) {
+                            auto fIt = runtimeFragments.find(id);
+                            if (fIt != runtimeFragments.end())
+                                msg += ",\"runtime\":" + fIt->second;
+                        }
+                        msg += "}";
+                        first = false;
                     }
-                    rtJson += "}}";
-                    if (!firstMod) {
-                        conn->send_binary(rtJson);
-                    }
+                    msg += classesTail;
+                    conn->send_binary(msg);
                 }
             }
         });
@@ -1644,19 +1651,116 @@ void Server::start() {
             }
         });
 
-        // Set up static file serving from config_.staticDir.
+        // Set up static file serving from config_.staticDir. Crow resolves
+        // CROW_STATIC_DIRECTORY (= g_crowStaticDir) at run() time, so point it at
+        // the *configured* dir here — otherwise a non-default --data-dir serves
+        // the build-default "./data/UI" (relative to cwd) and 404s. The index +
+        // SPA-fallback routes below read g_crowStaticDir too.
         const std::string staticDir = crow::utility::normalize_path(config_.staticDir);
+        g_crowStaticDir = staticDir; // normalized: forward slashes + trailing '/'
         if (!std::filesystem::exists(config_.staticDir)) {
             spdlog::warn("Static file directory does not exist: {}", config_.staticDir);
         } else {
             spdlog::info("Serving static files from: {}", config_.staticDir);
         }
 
+        // Loom monitoring UI dir — resolved independently of staticDir (typically
+        // install-relative) so /_loom works even when staticDir hosts a user app.
+        g_crowLoomUiDir = crow::utility::normalize_path(config_.loomUiDir);
+        if (!std::filesystem::exists(config_.loomUiDir)) {
+            spdlog::warn("Loom UI directory does not exist: {}", config_.loomUiDir);
+        } else {
+            spdlog::info("Serving Loom UI (/_loom) from: {}", config_.loomUiDir);
+        }
+
+        // index.html, read directly into the response body. set_static_file_info
+        // mangles absolute paths via sanitize_filename (→ 404), so we read the
+        // file ourselves rather than relying on Crow's static helper here.
+        auto readIndex = [](const std::string& dir) {
+            std::ifstream f(dir + "index.html", std::ios::binary);
+            std::stringstream ss;
+            ss << f.rdbuf();
+            crow::response res(200, ss.str());
+            res.add_header("Content-Type", "text/html; charset=utf-8");
+            return res;
+        };
+        auto serveIndex     = [readIndex]() { return readIndex(g_crowStaticDir); };
+        auto serveLoomIndex = [readIndex]() { return readIndex(g_crowLoomUiDir); };
+
+        // In standby (no user app) staticDir *is* the Loom UI, which is built for
+        // base '/_loom/' — serving it at '/' would render blank. So when the root
+        // static dir resolves to the Loom UI, send '/' to the canonical /_loom/.
+        // In user-project mode the dirs differ and the user app is served at '/'.
+        // Compare by filesystem identity (handles relative-vs-absolute paths);
+        // equivalent() needs both to exist, so a missing dir yields false.
+        std::error_code rootEqEc;
+        const bool rootIsLoomUi =
+            std::filesystem::equivalent(config_.staticDir, config_.loomUiDir, rootEqEc) && !rootEqEc;
+
         // Serve index.html at root.
         CROW_ROUTE(app, "/")
-        ([](crow::response& res) {
-            res.set_static_file_info(g_crowStaticDir + "index.html");
+        ([serveIndex, rootIsLoomUi](crow::response& res) {
+            if (rootIsLoomUi) {
+                res.code = 301;
+                res.add_header("Location", "/_loom/");
+            } else {
+                res = serveIndex();
+            }
             res.end();
+        });
+
+        // mapp Connect-compatible facade — additive REST + /api/1.0/pushchannel.
+        // Registered alongside the legacy /ws and /api/* routes; shares core_.
+        opcRest_ = std::make_unique<OpcUaRestServer>(core_);
+        opcRest_->registerRoutes(app);
+        opcRest_->startPump(config_.wsUpdateIntervalMs);
+
+        // Loom monitoring/config UI, always mounted at /_loom (regardless of what
+        // staticDir hosts). Same real-file-then-SPA-fallback behavior as the root
+        // app, but rooted at g_crowLoomUiDir. Registered BEFORE the "/<path>"
+        // catch-all so it wins (Crow resolves ambiguous matches to the lowest
+        // rule index, i.e. earliest-registered). The Loom frontend is built with
+        // Vite base '/_loom/', so its asset URLs resolve under this prefix. Crow
+        // auto-registers a 301 from the slash-less '/_loom' to '/_loom/'.
+        CROW_ROUTE(app, "/_loom/")
+        ([serveLoomIndex]() { return serveLoomIndex(); });
+        CROW_ROUTE(app, "/_loom/<path>")
+        ([serveLoomIndex](crow::response& res, const std::string& filePathPartial) {
+            std::error_code ec;
+            const std::string full = g_crowLoomUiDir + filePathPartial;
+            if (std::filesystem::is_regular_file(full, ec)) {
+                res.set_static_file_info_unsafe(full);
+                res.end();
+            } else {
+                res = serveLoomIndex();
+                res.end();
+            }
+        });
+
+        // Generic static + SPA history fallback (replaces Crow's built-in static
+        // catch-all, which we disabled via CROW_DISABLE_STATIC_DIR). For any GET:
+        //   - if it maps to a real file under the static dir, serve that file;
+        //   - otherwise return index.html so the client-side router can handle it
+        //     (a hard navigation/refresh on a client route returns the app, not 404).
+        // This lets Loom host ANY single-page app without hardcoding its routes.
+        //
+        // IMPORTANT: this catch-all MUST be registered LAST. Crow resolves a
+        // path that matches multiple rules to the LOWEST rule_index, i.e. the
+        // earliest-registered rule wins. Registering this "/<path>" wildcard
+        // after every real route (REST + WebSocket) gives it the highest index,
+        // so it only wins when no literal route matches — otherwise it would
+        // shadow the facade's GET endpoints and the pushchannel WS upgrade.
+        CROW_ROUTE(app, "/<path>")
+        ([serveIndex](crow::response& res, const std::string& filePathPartial) {
+            std::error_code ec;
+            const std::string full = g_crowStaticDir + filePathPartial;
+            if (std::filesystem::is_regular_file(full, ec)) {
+                res.set_static_file_info_unsafe(full);
+                res.end();
+            } else {
+                res = serveIndex();
+                res.end();
+            }
         });
 
         spdlog::info("Starting HTTP server on {}:{}", config_.bindAddress, config_.port);
@@ -1670,6 +1774,7 @@ void Server::start() {
         if (wsThread.joinable()) wsThread.join();
         watchRunning.store(false);
         if (watchThread.joinable()) watchThread.join();
+        if (opcRest_) opcRest_->stopPump();
     });
 }
 

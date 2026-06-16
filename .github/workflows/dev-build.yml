@@ -13,6 +13,9 @@ name: Dev build
 # packaging that ships.
 
 on:
+  push:
+    tags:
+      - 'dev'
   workflow_dispatch:
 
 concurrency:
@@ -23,6 +26,9 @@ concurrency:
 jobs:
   build:
     uses: ./.github/workflows/build.yml
+    # Reusable workflows don't get the caller's secrets automatically; pass them
+    # through so build.yml can read PACKAGES_READ_TOKEN (GitHub Packages auth).
+    secrets: inherit
     with:
       ref: ${{ github.ref }}
 
