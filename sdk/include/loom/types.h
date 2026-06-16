@@ -8,15 +8,16 @@ namespace loom {
 
 /// API version for ABI compatibility checks between runtime and modules.
 ///
-/// Bump on any change to the ModuleHeader layout or to the exported
-/// loom_module_create / loom_module_destroy contract. Modules whose
+/// Bump on any change to the ModuleHeader layout, the IModule vtable, or the
+/// exported loom_module_create / loom_module_destroy contract. Modules whose
 /// `hdr->api_version` doesn't match are rejected before the runtime
 /// reads any header fields, so introducing a new trailing field is
 /// safe — a module built against the older header will be rejected
 /// rather than have its header read past the end.
 ///
 /// v1 → v2: added ModuleHeader::source_file.
-inline constexpr uint32_t kApiVersion = 2;
+/// v2 → v3: added IModule::initGuarded() virtual (vtable layout change).
+inline constexpr uint32_t kApiVersion = 3;
 
 /// Describes a loaded module to the runtime.
 struct ModuleHeader {
