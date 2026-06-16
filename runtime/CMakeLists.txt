@@ -25,6 +25,7 @@ endif()
 add_library(loom_runtime STATIC
     src/run.cpp
     src/runtime_core.cpp
+    src/runtime_heap.cpp
     src/module_loader.cpp
     src/scheduler.cpp
     src/scheduler_config.cpp

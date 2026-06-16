@@ -4,6 +4,7 @@
 #include <shared_mutex>
 #include <loom/bus.h>
 #include "loom/types.h"
+#include "loom/runtime_heap.h"
 #include "loom/tag_table.hpp"
 #include <glaze/glaze.hpp>
 #include <string>
@@ -116,8 +117,42 @@ public:
         registry_ = registry;
     }
 
+    // Runtime heap injection (called by runtime before init). The heap is owned
+    // by the resident runtime; see runtime_heap.h.
+    void setRuntimeHeap(IRuntimeHeap* heap) {
+        runtimeHeap_ = heap;
+    }
+
     Bus* bus() const { return bus_; }
     const std::string& moduleId() const { return moduleId_; }
+
+    /// Resident runtime heap, used with loom::makeShared<T>() to allocate
+    /// trivially-destructible cross-module shared objects that stay valid across
+    /// hot-reloads. May be null if the runtime predates this API.
+    IRuntimeHeap* runtimeHeap() const { return runtimeHeap_; }
+
+    /// Allocate a trivially-destructible T from this module's injected runtime
+    /// heap — the no-argument form of loom::makeShared(*runtimeHeap(), ...).
+    /// Returns an empty shared_ptr if no heap was injected (call after init).
+    template <class T, class... Args>
+    std::shared_ptr<T> makeShared(Args&&... args) {
+        if (!runtimeHeap_) return {};
+        return loom::makeShared<T>(*runtimeHeap_, std::forward<Args>(args)...);
+    }
+
+    /// Type-erased resolution of a sibling module's Runtime pointer with a
+    /// type-id check. Returns nullptr if the module is absent or the runtime
+    /// type id doesn't match. This is the non-template form of
+    /// Module::getRuntimeAs<T>(), usable by header-only helpers (e.g. function
+    /// blocks) that hold only an IModule*. Same lifetime caveat applies: do not
+    /// cache the returned pointer across cyclic() calls.
+    void* findRuntime(std::string_view id, std::string_view typeId) {
+        if (!registry_) return nullptr;
+        auto* mod = registry_->findModule(id);
+        if (!mod) return nullptr;
+        if (!typeId.empty() && mod->runtimeTypeId() != typeId) return nullptr;
+        return mod->runtimePtr();
+    }
 
     // Called by runtime before unload to tear down all subscriptions made by this module.
     void cleanupSubscriptions() {
@@ -131,6 +166,7 @@ public:
 protected:
     Bus* bus_ = nullptr;
     IModuleRegistry* registry_ = nullptr;
+    IRuntimeHeap* runtimeHeap_ = nullptr;
     std::vector<uint64_t> subscriptionIds_;
     std::string moduleId_;
 };

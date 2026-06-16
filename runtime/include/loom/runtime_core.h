@@ -9,6 +9,7 @@
 #include "loom/module_loader.h"
 #include "loom/module_watcher.h"
 #include "loom/oscilloscope.h"
+#include "loom/runtime_heap_impl.h"
 #include "loom/scheduler.h"
 #include "loom/scheduler_config.h"
 #include "loom/types.h"
@@ -130,6 +131,7 @@ private:
     Oscilloscope  oscilloscope_;
     IOMapper      ioMapper_;
     ModuleWatcher watcher_;
+    RuntimeHeap   runtimeHeap_;
 
     std::shared_mutex moduleMutex_;
 };

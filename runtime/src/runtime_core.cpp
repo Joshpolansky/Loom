@@ -308,6 +308,7 @@ bool RuntimeCore::startModule(const std::string& id, const InitContext& ctx) {
     dataEngine_.registerModule(id, mod->instance.get());
     mod->instance->setBus(&bus_, id);
     mod->instance->setRegistry(this);
+    mod->instance->setRuntimeHeap(&runtimeHeap_);
     dataStore_.loadConfig(id, dataEngine_);
 
     TaskConfig taskCfg = resolveTaskConfig(id, mod->instance.get());
