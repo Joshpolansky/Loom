@@ -37,9 +37,9 @@ public:
             runtime_.last_command = s.command;
             runtime_.last_target  = s.target;
             if (auto st = s.status.lock()) {   // write status THROUGH the weak ref
-                st->phase    = loom::CmdPhase::Done;
-                st->done     = true;
-                st->progress = 1.0;
+                st->phase.store(loom::CmdPhase::Done);
+                st->done.store(true);
+                st->progress.store(1.0);
             }
         }
     }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -41,17 +42,22 @@ enum class CmdPhase : uint8_t {
 };
 
 /// Status of one async command, written through by the provider and read by the
-/// issuing function block. Trivially destructible → lives in runtime-heap
-/// storage (see runtime_heap.h).
+/// issuing function block. The provider (its cyclic thread) and the consumer FB
+/// may run on different scheduler threads, so the fields are atomic to avoid a
+/// data race; write with .store(), read with .load(). Still trivially
+/// destructible (atomics of trivial types are), so it lives in runtime-heap
+/// storage (see runtime_heap.h). Note: per-field atomics give no cross-field
+/// snapshot — a reader re-reads each cycle and converges; map correlated state
+/// onto `phase` (one load) where consistency matters.
 struct CommandStatus {
-    CmdPhase phase    = CmdPhase::None;
-    bool     busy     = false;
-    bool     active   = false;
-    bool     done     = false;
-    bool     aborted  = false;
-    bool     error    = false;
-    uint32_t error_id = 0;
-    double   progress = 0.0;  ///< optional 0..1 progress for long commands
+    std::atomic<CmdPhase> phase    {CmdPhase::None};
+    std::atomic<bool>     busy     {false};
+    std::atomic<bool>     active   {false};
+    std::atomic<bool>     done     {false};
+    std::atomic<bool>     aborted  {false};
+    std::atomic<bool>     error    {false};
+    std::atomic<uint32_t> error_id {0};
+    std::atomic<double>   progress {0.0};  ///< optional 0..1 progress for long commands
 };
 
 /// PLCopen buffer behaviour at the provider when a command arrives.
@@ -126,8 +132,9 @@ protected:
         }
         if (status_) {
             const CommandStatus& s = *status_;
-            busy = s.busy; active = s.active; done = s.done;
-            command_aborted = s.aborted; error = s.error; error_id = s.error_id;
+            busy = s.busy.load(); active = s.active.load(); done = s.done.load();
+            command_aborted = s.aborted.load(); error = s.error.load();
+            error_id = s.error_id.load();
         }
         if (!execute && prev_execute_) reset();  // PLCopen: outputs reset on Execute drop
         prev_execute_ = execute;

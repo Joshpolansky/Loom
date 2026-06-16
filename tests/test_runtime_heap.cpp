@@ -108,11 +108,11 @@ TEST(RuntimeHeapTest, WriteThroughWeakPtr) {
     std::weak_ptr<loom::CommandStatus> executor = issuer;
 
     if (auto s = executor.lock()) {     // executor writes status THROUGH the weak ref
-        s->phase = loom::CmdPhase::Done;
-        s->done  = true;
+        s->phase.store(loom::CmdPhase::Done);
+        s->done.store(true);
     }
-    EXPECT_TRUE(issuer->done);
-    EXPECT_EQ(issuer->phase, loom::CmdPhase::Done);
+    EXPECT_TRUE(issuer->done.load());
+    EXPECT_EQ(issuer->phase.load(), loom::CmdPhase::Done);
 
     issuer.reset();                     // issuer gone → executor write becomes a no-op
     EXPECT_TRUE(executor.expired());

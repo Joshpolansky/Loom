@@ -49,11 +49,11 @@ TEST_F(CommandIntegrationTest, CommandRoundTripAcrossModuleBoundary) {
     channel->submit(loom::CommandSubmission{/*command*/ 7, /*target*/ 2, "{}",
                                             loom::BufferMode::Aborting, status});
 
-    EXPECT_FALSE(status->done);
+    EXPECT_FALSE(status->done.load());
     mod->instance->cyclic();            // provider drains + writes status through weak_ptr
-    EXPECT_TRUE(status->done);
-    EXPECT_EQ(status->phase, loom::CmdPhase::Done);
-    EXPECT_DOUBLE_EQ(status->progress, 1.0);
+    EXPECT_TRUE(status->done.load());
+    EXPECT_EQ(status->phase.load(), loom::CmdPhase::Done);
+    EXPECT_DOUBLE_EQ(status->progress.load(), 1.0);
 
     // Teardown order from RuntimeCore: cleanup (unregisters the channel) then unload.
     mod->instance->cleanupSubscriptions();
@@ -64,7 +64,7 @@ TEST_F(CommandIntegrationTest, CommandRoundTripAcrossModuleBoundary) {
 
     // The status cell was allocated by the resident heap, so it remains valid
     // after the module is unloaded, and frees through the resident deleter.
-    EXPECT_TRUE(status->done);
+    EXPECT_TRUE(status->done.load());
     status.reset();                     // must not crash (deleter is resident)
     SUCCEED();
 }

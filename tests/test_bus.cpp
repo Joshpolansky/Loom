@@ -1,9 +1,11 @@
 #include "loom/bus.h"
+#include "loom/command.h"
 
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -254,4 +256,39 @@ TEST(BusTest, ConcurrentPublishSubscribe) {
 
     // 4 threads * 100 messages * 4 subscribers = 1600
     EXPECT_EQ(totalReceived.load(), 1600);
+}
+
+// =============================================================================
+// Command Channel Registry Tests
+// =============================================================================
+
+TEST(BusTest, CommandChannelRegisterLookupUnregister) {
+    loom::Bus bus;
+    loom::CommandChannel ch;
+
+    EXPECT_EQ(bus.commandChannel("axis_1"), nullptr);   // not registered yet
+    bus.registerCommandChannel("axis_1", &ch);
+    EXPECT_EQ(bus.commandChannel("axis_1"), &ch);        // looked up by provider id
+    bus.unregisterCommandChannel("axis_1");
+    EXPECT_EQ(bus.commandChannel("axis_1"), nullptr);    // gone after unregister
+}
+
+TEST(BusTest, CommandChannelSubmitDrain) {
+    loom::CommandChannel ch;
+    auto status = std::make_shared<loom::CommandStatus>();
+
+    ch.submit(loom::CommandSubmission{/*command*/ 42, /*target*/ 3, "{}",
+                                      loom::BufferMode::Aborting, status});
+
+    std::vector<loom::CommandSubmission> out;
+    ch.drain(out);
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0].command, 42u);
+    EXPECT_EQ(out[0].target, 3u);
+
+    if (auto s = out[0].status.lock()) s->done.store(true);  // write-through
+    EXPECT_TRUE(status->done.load());
+
+    ch.drain(out);                 // inbox was emptied by the previous drain
+    EXPECT_TRUE(out.empty());
 }

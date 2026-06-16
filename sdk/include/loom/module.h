@@ -127,7 +127,8 @@ public:
     /// module (looked up on the Bus by this module's id). Call once in init();
     /// it is unregistered automatically on unload. See command.h / command_client.h.
     void provideCommands(CommandChannel& channel) {
-        if (bus_) bus_->registerCommandChannel(moduleId_, &channel);
+        if (!bus_) return;   // not registered → leave providesCommands_ false
+        bus_->registerCommandChannel(moduleId_, &channel);
         providesCommands_ = true;
     }
 
