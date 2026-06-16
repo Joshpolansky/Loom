@@ -123,6 +123,14 @@ public:
         runtimeHeap_ = heap;
     }
 
+    /// Register a CommandChannel so consumers can submit async commands to this
+    /// module (looked up on the Bus by this module's id). Call once in init();
+    /// it is unregistered automatically on unload. See command.h / command_client.h.
+    void provideCommands(CommandChannel& channel) {
+        if (bus_) bus_->registerCommandChannel(moduleId_, &channel);
+        providesCommands_ = true;
+    }
+
     Bus* bus() const { return bus_; }
     const std::string& moduleId() const { return moduleId_; }
 
@@ -161,12 +169,17 @@ public:
             bus_->unsubscribe(id);
         }
         subscriptionIds_.clear();
+        if (providesCommands_) {
+            bus_->unregisterCommandChannel(moduleId_);
+            providesCommands_ = false;
+        }
     }
 
 protected:
     Bus* bus_ = nullptr;
     IModuleRegistry* registry_ = nullptr;
     IRuntimeHeap* runtimeHeap_ = nullptr;
+    bool providesCommands_ = false;
     std::vector<uint64_t> subscriptionIds_;
     std::string moduleId_;
 };

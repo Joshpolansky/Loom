@@ -12,6 +12,8 @@
 
 namespace loom {
 
+class CommandChannel;  // loom/command.h — registered here, looked up by consumers
+
 /// Result of a service call.
 struct CallResult {
     bool ok = false;
@@ -159,6 +161,29 @@ public:
     }
 
     // =========================================================================
+    // Command channels (async-command providers)
+    // =========================================================================
+
+    /// A provider registers its CommandChannel under its module id; consumers
+    /// look it up via CommandClient. Lifetime is the provider's — it must
+    /// unregister on unload (Module does this in cleanupSubscriptions).
+    inline void registerCommandChannel(const std::string& provider, CommandChannel* channel) {
+        std::lock_guard lock(commandMutex_);
+        commandChannels_[provider] = channel;
+    }
+
+    inline void unregisterCommandChannel(const std::string& provider) {
+        std::lock_guard lock(commandMutex_);
+        commandChannels_.erase(provider);
+    }
+
+    inline CommandChannel* commandChannel(const std::string& provider) const {
+        std::lock_guard lock(commandMutex_);
+        auto it = commandChannels_.find(provider);
+        return it == commandChannels_.end() ? nullptr : it->second;
+    }
+
+    // =========================================================================
     // Introspection
     // =========================================================================
 
@@ -212,6 +237,9 @@ private:
     mutable std::mutex serviceMutex_;
     std::unordered_map<std::string, ServiceHandler> serviceHandlers_;
     std::unordered_map<std::string, std::string> serviceSchemas_;
+
+    mutable std::mutex commandMutex_;
+    std::unordered_map<std::string, CommandChannel*> commandChannels_;
 };
 
 } // namespace loom
