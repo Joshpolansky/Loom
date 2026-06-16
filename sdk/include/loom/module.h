@@ -544,11 +544,14 @@ public:
     /// init(), so registerExtension() is only valid during init(). init() runs
     /// single-threaded before any worker thread touches the module, so no lock
     /// is needed here.
-    void initGuarded(const InitContext& ctx) override {
-        registrationOpen_ = true;
-        init(ctx);
-        registrationOpen_ = false;
-    }
+void initGuarded(const InitContext& ctx) override {
+    registrationOpen_ = true;
+    struct Guard {
+        bool& flag;
+        ~Guard() { flag = false; }
+    } guard{registrationOpen_};
+    init(ctx);
+}
 
     /// The scheduler calls this instead of cyclic() directly so that runtime_
     /// reads from other threads (readField, readSection) are not racing with writes.
