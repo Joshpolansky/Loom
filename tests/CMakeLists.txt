@@ -5,6 +5,8 @@ add_executable(loom_tests
     test_bus.cpp
     test_trace_cache.cpp
     test_tag_table.cpp
+    test_runtime_heap.cpp
+    test_command_integration.cpp
 )
 
 target_include_directories(loom_tests PRIVATE
@@ -27,6 +29,7 @@ target_sources(loom_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/runtime/src/io_mapper.cpp
     ${CMAKE_SOURCE_DIR}/runtime/src/scheduler.cpp
     ${CMAKE_SOURCE_DIR}/runtime/src/scheduler_config.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/src/runtime_heap.cpp
 )
 
 include(GoogleTest)
@@ -34,10 +37,11 @@ gtest_discover_tests(loom_tests
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 
-# Ensure example_motor is built before tests (tests load it as a plugin)
-add_dependencies(loom_tests example_motor)
+# Ensure the plugin modules the tests load are built first.
+add_dependencies(loom_tests example_motor command_probe)
 
-# Tell tests where modules are built
+# Tell tests where modules are built and the platform plugin suffix.
 target_compile_definitions(loom_tests PRIVATE
-    LOOM_MODULE_DIR="${CMAKE_BINARY_DIR}/modules"
+    LOOM_MODULE_DIR="${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/modules"
+    LOOM_MODULE_SUFFIX="${LOOM_MODULE_SUFFIX}"
 )

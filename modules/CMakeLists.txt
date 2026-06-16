@@ -3,6 +3,7 @@ set(LOOM_MODULES_OUTPUT_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/modules")
 
 # Build all example modules
 add_subdirectory(class_based)
+add_subdirectory(command_probe)
 add_subdirectory(ethercat)
 add_subdirectory(example_motor)
 add_subdirectory(oscilloscope)

@@ -1,38 +1,15 @@
 #include <gtest/gtest.h>
 
 #include "loom/module_loader.h"
+#include "module_test_util.h"
 
 #include <filesystem>
 
 namespace {
 
-// Helper to find the example_motor.so in the build directory
+// Locate example_motor using the platform suffix + CMake-provided module dir.
 std::filesystem::path findExampleMotor() {
-    // Use compile-time path from CMake if available
-#ifdef LOOM_MODULE_DIR
-    auto p = std::filesystem::path(LOOM_MODULE_DIR) / "example_motor.so";
-    if (std::filesystem::exists(p)) return p;
-#endif
-
-    // Fallback: look relative to working directory
-    std::filesystem::path candidates[] = {
-        "modules/example_motor.so",
-        "../modules/example_motor.so",
-        "../../modules/example_motor.so",
-    };
-
-    // Also try via environment variable or CMake-provided path
-    for (auto& p : candidates) {
-        if (std::filesystem::exists(p)) return p;
-    }
-
-    // Try from LOOM_MODULE_DIR env
-    if (auto* dir = std::getenv("LOOM_MODULE_DIR")) {
-        auto p = std::filesystem::path(dir) / "example_motor.so";
-        if (std::filesystem::exists(p)) return p;
-    }
-
-    return {};
+    return loomtest::findModule("example_motor");
 }
 
 class ModuleLoaderTest : public ::testing::Test {
@@ -91,6 +68,33 @@ TEST_F(ModuleLoaderTest, UnloadModule) {
 
 TEST_F(ModuleLoaderTest, UnloadNonExistent) {
     EXPECT_FALSE(loader.unload("DoesNotExist"));
+}
+
+TEST_F(ModuleLoaderTest, ReloadModule) {
+    auto path = findExampleMotor();
+    if (path.empty()) {
+        GTEST_SKIP() << "example_motor not found — build modules first";
+    }
+
+    auto id = loader.load(path);
+    ASSERT_FALSE(id.empty());
+    auto* before = loader.get(id);
+    ASSERT_NE(before, nullptr);
+    ASSERT_NE(before->instance, nullptr);
+
+    // Warm-restart: unload + reload from the same path.
+    EXPECT_TRUE(loader.reload(id));
+
+    auto* after = loader.get(id);
+    ASSERT_NE(after, nullptr);
+    EXPECT_EQ(after->id, id);
+    EXPECT_EQ(after->state, loom::ModuleState::Loaded);
+    ASSERT_NE(after->instance, nullptr);  // a fresh instance is in place
+
+    // The reloaded module is still usable.
+    after->instance->init(loom::InitContext{});
+    after->instance->cyclic();
+    after->instance->exit();
 }
 
 TEST_F(ModuleLoaderTest, ModuleLifecycle) {
