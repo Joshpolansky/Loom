@@ -220,9 +220,10 @@ bool Scheduler::start(LoadedModule& mod, const TaskConfig& config, const InitCon
         return false;
     }
 
-    // Init module before any thread touches it.
+    // Init module before any thread touches it. initGuarded() opens the
+    // extension-registration window around the user's init().
     spdlog::info("Initializing module '{}' (reason: {})", mod.id, static_cast<int>(ctx.reason));
-    mod.instance->init(ctx);
+    mod.instance->initGuarded(ctx);
     mod.state = ModuleState::Initialized;
 
     // Create fresh TaskState (unique_ptr for pointer stability).
