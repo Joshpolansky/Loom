@@ -132,6 +132,19 @@ public:
         providesCommands_ = true;
     }
 
+    /// Expose a typed connection point under `name` for consumers to bind via
+    /// loom::PortRef<T> / Bus::port<T>. The object must outlive the binding;
+    /// unregistered automatically on unload. See port.h.
+    template <class T>
+    void providePort(const std::string& name, T& obj) {
+        if (!bus_) return;
+        if constexpr (requires { T::kTypeId; })
+            bus_->registerPort(name, &obj, T::kTypeId);
+        else
+            bus_->registerPort(name, &obj, {});
+        providedPorts_.push_back(name);
+    }
+
     Bus* bus() const { return bus_; }
     const std::string& moduleId() const { return moduleId_; }
 
@@ -174,6 +187,10 @@ public:
             bus_->unregisterCommandChannel(moduleId_);
             providesCommands_ = false;
         }
+        for (const auto& name : providedPorts_) {
+            bus_->unregisterPort(name);
+        }
+        providedPorts_.clear();
     }
 
 protected:
@@ -181,6 +198,7 @@ protected:
     IModuleRegistry* registry_ = nullptr;
     IRuntimeHeap* runtimeHeap_ = nullptr;
     bool providesCommands_ = false;
+    std::vector<std::string> providedPorts_;
     std::vector<uint64_t> subscriptionIds_;
     std::string moduleId_;
 };

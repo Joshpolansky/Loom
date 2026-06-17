@@ -8,6 +8,7 @@ add_executable(loom_tests
     test_runtime_heap.cpp
     test_command_integration.cpp
     test_command_fb.cpp
+    test_port.cpp
 )
 
 target_include_directories(loom_tests PRIVATE
