@@ -1,6 +1,7 @@
 #include "loom/runtime_core.h"
 #include "loom/server.h"
 #include "loom/version.h"
+#include "loom/diag/crash_handler.h"
 
 #include <spdlog/spdlog.h>
 
@@ -148,6 +149,11 @@ int run(int argc, char* argv[]) {
 
     std::signal(SIGINT,  signalHandler);
     std::signal(SIGTERM, signalHandler);
+
+    // Process-global crash capture: any fatal signal / SEH / unhandled C++
+    // exception writes a crash report (faulting module/phase + build id + stack)
+    // to <dataDir>/crash before the process dies. Covers module and runtime faults.
+    loom::diag::CrashHandler::install({std::filesystem::path(dataDir) / "crash"});
 
     RuntimeConfig runtimeCfg;
     runtimeCfg.moduleDir = moduleDirs.front();

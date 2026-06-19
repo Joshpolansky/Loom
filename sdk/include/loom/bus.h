@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <future>
 #include <mutex>
@@ -147,7 +148,16 @@ public:
             }
             handler = it->second;
         }
-        return handler(request);
+        // A throwing service handler must not unwind into the caller (which may
+        // be a cyclic thread or the HTTP thread) — return an error instead.
+        // Dependency-free (std only): keeps the SDK clean of diagnostics deps.
+        try {
+            return handler(request);
+        } catch (const std::exception& e) {
+            return {false, {}, std::string("service threw: ") + e.what()};
+        } catch (...) {
+            return {false, {}, "service threw: unknown exception"};
+        }
     }
 
     // =========================================================================

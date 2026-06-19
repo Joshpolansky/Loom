@@ -1,6 +1,8 @@
 #include "loom/scheduler.h"
 #include "loom/scheduler_config.h"
 #include "loom/io_mapper.h"
+#include "loom/diag/guard.h"
+#include "loom/diag/fault_sink.h"
 
 #include <spdlog/spdlog.h>
 
@@ -8,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <shared_mutex>
 
@@ -165,6 +168,35 @@ void Scheduler::setIOMapper(IOMapper* mapper) {
     ioMapper_ = mapper;
 }
 
+void Scheduler::recordModuleFault(TaskState& state, LoadedModule& mod,
+                                  diag::Phase phase, std::string_view message) {
+    // Write the fault details FIRST, then publish `faulted` with release. A
+    // reader (the server) that observes faulted==true with acquire is then
+    // guaranteed to see a fully-written lastFaultMsg. A module faults at most
+    // once (it's skipped thereafter), so these fields are effectively write-once.
+    const int64_t nowMs = static_cast<int64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    state.lastFaultMs.store(nowMs);
+    state.lastFaultPhase.store(static_cast<uint8_t>(phase));
+    {
+        const std::size_t n = std::min(message.size(), sizeof(state.lastFaultMsg) - 1);
+        std::memcpy(state.lastFaultMsg, message.data(), n);
+        state.lastFaultMsg[n] = '\0';
+    }
+    mod.state = ModuleState::Error;
+    state.faulted.store(true, std::memory_order_release);  // publish last
+
+    spdlog::error("Module '{}' faulted in {}: {}",
+                  mod.id, diag::phaseName(phase), message);
+
+    if (faultSink_) {
+        faultSink_->onModuleFault(diag::FaultEvent{
+            mod.id, mod.className, phase,
+            state.cycleCount.load(), std::string(message)});
+    }
+}
+
 Scheduler::~Scheduler() {
     stopAll();
 }
@@ -224,6 +256,7 @@ bool Scheduler::start(LoadedModule& mod, const TaskConfig& config, const InitCon
     // Init module before any thread touches it. initGuarded() opens the
     // extension-registration window around the user's init().
     spdlog::info("Initializing module '{}' (reason: {})", mod.id, static_cast<int>(ctx.reason));
+    diag::BreadcrumbScope initCrumb(diag::Phase::Init, mod.id.c_str(), mod.className.c_str());
     try {
         mod.instance->initGuarded(ctx);
     } catch (const std::exception& e) {
@@ -231,6 +264,9 @@ bool Scheduler::start(LoadedModule& mod, const TaskConfig& config, const InitCon
         // of the scheduler and terminate the runtime — fail this module cleanly.
         spdlog::error("Module '{}' init() failed: {}", mod.id, e.what());
         mod.state = ModuleState::Error;
+        if (faultSink_)
+            faultSink_->onModuleFault(diag::FaultEvent{
+                mod.id, mod.className, diag::Phase::Init, 0, e.what()});
         return false;
     }
     mod.state = ModuleState::Initialized;
@@ -244,10 +280,15 @@ bool Scheduler::start(LoadedModule& mod, const TaskConfig& config, const InitCon
 
     // Start long-running thread immediately (independent of class membership).
     if (config.enableLongRunning) {
-        statePtr->longRunningThread = std::thread([&mod, statePtr]() {
+        statePtr->longRunningThread = std::thread([this, &mod, statePtr]() {
             spdlog::info("Long-running task started for '{}'", mod.id);
             while (statePtr->running.load()) {
-                mod.instance->longRunning();
+                bool ok = diag::guard(diag::Phase::LongRunning, mod.id.c_str(), mod.className.c_str(),
+                    [&]{ mod.instance->longRunning(); },
+                    [&](const diag::FaultInfo& f) {
+                        recordModuleFault(*statePtr, mod, f.phase, f.message);
+                    });
+                if (!ok) break;  // stop the loop rather than spin-faulting
             }
             spdlog::info("Long-running task ended for '{}'", mod.id);
         });
@@ -292,6 +333,11 @@ void Scheduler::startClasses() {
 
 bool Scheduler::stop(const std::string& moduleId) {
     std::thread cyclicToJoin, longRunToJoin;
+    // Keep the TaskState alive until AFTER the threads are joined: the cyclic /
+    // long-running threads hold a raw TaskState* (running flag, fault fields), so
+    // destroying it before the join is a use-after-free. We extract the owning
+    // unique_ptr into this local and let it drop at end of function, post-join.
+    std::unique_ptr<TaskState> stateToFree;
 
     {
         std::lock_guard lock(mutex_);
@@ -328,11 +374,16 @@ bool Scheduler::stop(const std::string& moduleId) {
 
         spdlog::info("Module '{}' stopped ({} cycles, {} overruns)",
                      moduleId, state.cycleCount.load(), state.overrunCount.load());
-        tasks_.erase(moduleId);
+        // Transfer ownership out of the map (keeps the TaskState object alive via
+        // stateToFree) before erasing the now-empty slot.
+        stateToFree = std::move(stateIt->second);
+        tasks_.erase(stateIt);
         configs_.erase(moduleId);
     }
 
-    // Join outside the lock so we don't block the mutex.
+    // Join outside the lock so we don't block the mutex. stateToFree keeps the
+    // TaskState valid for the threads until they have fully exited here, after
+    // which it is destroyed.
     if (cyclicToJoin.joinable())  cyclicToJoin.join();
     if (longRunToJoin.joinable()) longRunToJoin.join();
 
@@ -752,10 +803,18 @@ void Scheduler::classLoop(ClassRunnerState& runner) {
         //       Reading it here without a lock is safe.
         auto execStart = std::chrono::steady_clock::now();
 
+        // Mark a member faulted (skipped on subsequent sweeps/ticks via the
+        // faulted checks below) and report — used by the guarded calls.
+        auto faultMember = [&](auto& m, const diag::FaultInfo& f) {
+            recordModuleFault(*m.state, *m.mod, f.phase, f.message);
+        };
+
         // --- Sweep 1: preCyclic (e.g. read hardware inputs) ---
         for (auto& member : runner.members) {
             if (member.state->faulted.load()) continue;
-            member.mod->instance->preCyclicGuarded();
+            diag::guard(diag::Phase::PreCyclic, member.moduleId.c_str(), member.mod->className.c_str(),
+                        [&]{ member.mod->instance->preCyclicGuarded(); },
+                        [&](const diag::FaultInfo& f){ faultMember(member, f); });
         }
 
         // --- Sweep 2: cyclic (do work) — timed, sampled ---
@@ -775,7 +834,9 @@ void Scheduler::classLoop(ClassRunnerState& runner) {
 
             // Execute (cyclicGuarded acquires module's runtimeMutex_ so
             // server/watch threads can't race on runtime_ reads)
-            member.mod->instance->cyclicGuarded();
+            diag::guard(diag::Phase::Cyclic, member.moduleId.c_str(), member.mod->className.c_str(),
+                        [&]{ member.mod->instance->cyclicGuarded(); },
+                        [&](const diag::FaultInfo& f){ faultMember(member, f); });
 
             // Lightweight sampling: use oscilloscope fast-path.
             // A member in runner.members is guaranteed alive — removeMember() pauses
@@ -818,7 +879,9 @@ void Scheduler::classLoop(ClassRunnerState& runner) {
         // --- Sweep 3: postCyclic (e.g. flush outputs to hardware) ---
         for (auto& member : runner.members) {
             if (member.state->faulted.load()) continue;
-            member.mod->instance->postCyclicGuarded();
+            diag::guard(diag::Phase::PostCyclic, member.moduleId.c_str(), member.mod->className.c_str(),
+                        [&]{ member.mod->instance->postCyclicGuarded(); },
+                        [&](const diag::FaultInfo& f){ faultMember(member, f); });
         }
 
         // --- Record total class cycle time ---
@@ -921,21 +984,31 @@ void Scheduler::isolatedLoop(LoadedModule& mod, TaskConfig config, TaskState& st
         state.lastCyclicStartNs.store(startNs);
 
         auto t0 = std::chrono::steady_clock::now();
-        mod.instance->cyclicGuarded();
+        if (!state.faulted.load()) {
+            diag::guard(diag::Phase::Cyclic, mod.id.c_str(), mod.className.c_str(),
+                        [&]{ mod.instance->cyclicGuarded(); },
+                        [&](const diag::FaultInfo& f){
+                            recordModuleFault(state, mod, f.phase, f.message);
+                        });
+        }
         auto t1 = std::chrono::steady_clock::now();
 
-        // Execute I/O mappings for this isolated module
-        if (ioMapper_) {
-            ioMapper_->executeForModule(mod.id);
-        }
+        // Once quarantined, skip I/O mappings + sampling too (the class loop skips
+        // faulted members entirely) — don't keep touching a module in an error state.
+        if (!state.faulted.load()) {
+            // Execute I/O mappings for this isolated module
+            if (ioMapper_) {
+                ioMapper_->executeForModule(mod.id);
+            }
 
-        // Sample this isolated module using oscilloscope fast-path.
-        // The isolated thread owns this module exclusively; state.running guards lifetime.
-        if (oscilloscope_ && dataEngine_) {
-            int64_t nowMs = static_cast<int64_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count());
-            oscilloscope_->sampleModule(mod.id, *dataEngine_, *mod.instance, nowMs);
+            // Sample this isolated module using oscilloscope fast-path.
+            // The isolated thread owns this module exclusively; state.running guards lifetime.
+            if (oscilloscope_ && dataEngine_) {
+                int64_t nowMs = static_cast<int64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count());
+                oscilloscope_->sampleModule(mod.id, *dataEngine_, *mod.instance, nowMs);
+            }
         }
 
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0);

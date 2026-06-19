@@ -23,3 +23,4 @@ Thumbs.db
 # Frontend
 frontend/node_modules/
 frontend/dist/
+_crashtest/

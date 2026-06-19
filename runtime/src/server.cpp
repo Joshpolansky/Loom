@@ -1,4 +1,6 @@
 #include "loom/server.h"
+#include "loom/diag/breadcrumb.h"
+#include "loom/diag/fault_store.h"
 
 // Crow static serving: define CROW_STATIC_DIRECTORY as a C++ variable expression
 // so the path is resolved at runtime (when app.run() calls add_static_dir()).
@@ -273,6 +275,19 @@ static std::string moduleInfoJson(const LoadedModule& mod, const Scheduler& sche
         json += ",\"maxCycleTimeUs\":" + std::to_string(ts->maxCycleTimeUs.load());
         json += ",\"lastJitterUs\":" + std::to_string(ts->lastJitterUs.load());
 
+        // Last-fault diagnostics (faulted modules are skipped by the scheduler).
+        // Acquire-load `faulted` and read the last-fault fields only when set:
+        // this pairs with the release store in Scheduler::recordModuleFault so we
+        // never read a half-written lastFaultMsg (see scheduler.h).
+        const bool faulted = ts->faulted.load(std::memory_order_acquire);
+        json += ",\"faulted\":" + std::string(faulted ? "true" : "false");
+        if (faulted) {
+            json += ",\"lastFaultMs\":" + std::to_string(ts->lastFaultMs.load());
+            json += ",\"lastFaultPhase\":\"" +
+                    std::string(diag::phaseName(static_cast<diag::Phase>(ts->lastFaultPhase.load()))) + "\"";
+            json += ",\"lastFaultMsg\":\"" + jsonEscapeString(ts->lastFaultMsg) + "\"";
+        }
+
         // Add cycle history
         {
             std::lock_guard lk(ts->cycleHistoryMx);
@@ -352,6 +367,49 @@ void Server::start() {
             }
             auto json = glz::write_json(dtos).value_or("[]");
             auto resp = crow::response(200, json);
+            resp.add_header("Content-Type", "application/json");
+            resp.add_header("Access-Control-Allow-Origin", "*");
+            return resp;
+        });
+
+        // =====================================================================
+        // GET /api/faults — List fault reports (newest first). Includes this
+        // run's exception faults and any persisted reports from prior runs
+        // (signal-path crashes the process couldn't keep in memory).
+        // =====================================================================
+        CROW_ROUTE(app, "/api/faults")
+        ([this]() {
+            std::string json = "[";
+            bool first = true;
+            for (const auto& s : core_.faultStore().list()) {
+                if (!first) json += ",";
+                first = false;
+                json += "{";
+                json += "\"id\":\"" + jsonEscapeString(s.id) + "\"";
+                json += ",\"ts\":" + std::to_string(s.tsMs);
+                json += ",\"kind\":\"" + jsonEscapeString(s.kind) + "\"";
+                json += ",\"module\":\"" + jsonEscapeString(s.moduleId) + "\"";
+                json += ",\"class\":\"" + jsonEscapeString(s.className) + "\"";
+                json += ",\"phase\":\"" + jsonEscapeString(s.phase) + "\"";
+                json += ",\"reason\":\"" + jsonEscapeString(s.reason) + "\"";
+                json += "}";
+            }
+            json += "]";
+            auto resp = crow::response(200, json);
+            resp.add_header("Content-Type", "application/json");
+            resp.add_header("Access-Control-Allow-Origin", "*");
+            return resp;
+        });
+
+        // =====================================================================
+        // GET /api/faults/<id> — Full structured report for one fault.
+        // =====================================================================
+        CROW_ROUTE(app, "/api/faults/<string>")
+        ([this](const std::string& id) {
+            auto detail = core_.faultStore().detailJson(id);
+            crow::response resp = detail
+                ? crow::response(200, *detail)
+                : crow::response(404, R"({"error":"fault not found"})");
             resp.add_header("Content-Type", "application/json");
             resp.add_header("Access-Control-Allow-Origin", "*");
             return resp;

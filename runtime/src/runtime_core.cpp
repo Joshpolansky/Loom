@@ -43,7 +43,8 @@ std::filesystem::path resolveModulePath(const RuntimeConfig& config,
 
 RuntimeCore::RuntimeCore(const RuntimeConfig& config)
     : config_(config), dataStore_(config.dataDir),
-      watcher_(config.moduleDir) {
+      watcher_(config.moduleDir),
+      faultStore_(config.dataDir / "crash") {
     // Load scheduler.json from the data directory.
     auto schedPath = config.dataDir / "scheduler.json";
     bool schedExisted = std::filesystem::exists(schedPath);
@@ -52,6 +53,11 @@ RuntimeCore::RuntimeCore(const RuntimeConfig& config)
     // Provide scheduler with pointers needed for cycle-aligned oscilloscope sampling.
     scheduler_.setSamplingTargets(&oscilloscope_, &dataEngine_, &loader_, &moduleMutex_);
     scheduler_.setIOMapper(&ioMapper_);
+
+    // Wire fault reporting: a module-call exception is captured, persisted, and
+    // published on `loom/faults` by the sink (see runtime_fault_sink.cpp).
+    faultSink_ = std::make_unique<diag::RuntimeFaultSink>(faultStore_, dataEngine_, bus_);
+    scheduler_.setFaultSink(faultSink_.get());
     if (!schedExisted) {
         loom::saveSchedulerConfig(schedCfg_, schedPath);
         spdlog::info("Wrote default scheduler config to '{}'", schedPath.string());

@@ -4,6 +4,7 @@
 #include "loom/scheduler_config.h"
 #include "loom/oscilloscope.h"
 #include "loom/data_engine.h"
+#include "loom/diag/breadcrumb.h"
 
 #include <atomic>
 #include <chrono>
@@ -18,6 +19,8 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+namespace loom::diag { class IFaultSink; }
 
 namespace loom {
 
@@ -73,6 +76,17 @@ struct TaskState {
     std::atomic<int64_t>  maxCycleTimeUs{0};
     std::atomic<int64_t>  lastJitterUs{0};      ///< |actualStart − prevStart| − period (µs)
     std::atomic<int64_t>  lastCyclicStartNs{0}; ///< Used internally to compute per-module jitter
+
+    // Last-fault diagnostics, written by the faulting worker thread in
+    // Scheduler::recordModuleFault() and read by the server thread.
+    // Synchronization: recordModuleFault writes these fields, THEN stores
+    // `faulted` with memory_order_release. Readers MUST load `faulted` with
+    // acquire and read these only when it is true. A module faults at most once
+    // (it is skipped afterward), so lastFaultMsg is effectively write-once —
+    // hence safe to read as a plain buffer after observing faulted==true.
+    std::atomic<int64_t>  lastFaultMs{0};       ///< system_clock ms of last fault (0 = none)
+    std::atomic<uint8_t>  lastFaultPhase{0};    ///< Phase value at fault
+    char                  lastFaultMsg[256] = {};
 
     // Historical cycle/jitter data for charting (fixed-size ring buffer)
     MetricRingBuffer cycleHistory;
@@ -145,6 +159,11 @@ public:
     /// Configure the IOMapper for runtime field-value copying.
     /// The scheduler will call executeForClass/executeForModule at appropriate times.
     void setIOMapper(IOMapper* mapper);
+
+    /// Inject the fault sink notified when a guarded module call throws. Not
+    /// owned; must outlive the scheduler. Optional — nullptr disables reporting
+    /// (the module is still quarantined). Set before startClasses().
+    void setFaultSink(diag::IFaultSink* sink) { faultSink_ = sink; }
 
     /// Stop a module. Removes from class (or stops isolated thread). Joins long-running thread.
     /// Does NOT call exit() — caller's responsibility.
@@ -270,6 +289,12 @@ private:
     void classLoop(ClassRunnerState& runner);
     void isolatedLoop(LoadedModule& mod, TaskConfig config, TaskState& state);
 
+    /// Quarantine a module that threw from a guarded call and report the fault:
+    /// set faulted + ModuleState::Error, stamp last-fault fields, log, and notify
+    /// the fault sink (if any). Called from the worker thread, off the signal path.
+    void recordModuleFault(TaskState& state, LoadedModule& mod,
+                           diag::Phase phase, std::string_view message);
+
     // ---- State ------------------------------------------------------------------
 
     SchedulerConfig                                                  schedCfg_;
@@ -285,6 +310,7 @@ private:
     ModuleLoader*                                                    loader_       = nullptr;
     std::shared_mutex*                                               moduleMutex_  = nullptr;
     IOMapper*                                                        ioMapper_     = nullptr;
+    diag::IFaultSink*                                                faultSink_    = nullptr;
 };
 
 } // namespace loom

@@ -20,5 +20,6 @@ class LoomDevConan(ConanFile):
         # Runtime deps
         self.requires("spdlog/1.17.0")
         self.requires("crowcpp-crow/1.3.0")
+        self.requires("cpptrace/0.8.3")  # runtime-only: crash-report stack symbolization
         if self.options.with_tests:
             self.requires("gtest/1.15.0")
