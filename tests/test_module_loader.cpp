@@ -91,8 +91,9 @@ TEST_F(ModuleLoaderTest, ReloadModule) {
     EXPECT_EQ(after->state, loom::ModuleState::Loaded);
     ASSERT_NE(after->instance, nullptr);  // a fresh instance is in place
 
-    // The reloaded module is still usable.
-    after->instance->init(loom::InitContext{});
+    // The reloaded module is still usable. Use initGuarded() (the entry the
+    // runtime calls) so registerExtension() is valid during init().
+    after->instance->initGuarded(loom::InitContext{});
     after->instance->cyclic();
     after->instance->exit();
 }
@@ -109,8 +110,10 @@ TEST_F(ModuleLoaderTest, ModuleLifecycle) {
     auto* mod = loader.get(id);
     ASSERT_NE(mod, nullptr);
 
-    // Test init
-    mod->instance->init(loom::InitContext{});
+    // Test init — initGuarded() is the runtime's entry (opens the
+    // registerExtension window); calling bare init() would throw for modules
+    // that register extensions.
+    mod->instance->initGuarded(loom::InitContext{});
 
     // Test cyclic
     mod->instance->cyclic();
