@@ -3,6 +3,8 @@
 #include "loom/bus.h"
 #include "loom/data_engine.h"
 #include "loom/data_store.h"
+#include "loom/diag/fault_store.h"
+#include "loom/diag/runtime_fault_sink.h"
 #include "loom/instance_manifest.h"
 #include "loom/io_mapper.h"
 #include "loom/module.h"
@@ -16,6 +18,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <memory>
 #include <shared_mutex>
 #include <string>
 #include <vector>
@@ -92,6 +95,7 @@ public:
     Bus& bus()                      { return bus_; }
     Oscilloscope& oscilloscope()    { return oscilloscope_; }
     IOMapper& ioMapper()            { return ioMapper_; }
+    diag::FaultStore& faultStore()  { return faultStore_; }
     const RuntimeConfig& config() const { return config_; }
     const SchedulerConfig& schedulerConfig() const { return schedCfg_; }
 
@@ -132,6 +136,12 @@ private:
     IOMapper      ioMapper_;
     ModuleWatcher watcher_;
     RuntimeHeap   runtimeHeap_;
+
+    // Fault diagnostics: persistent store of fault reports + the sink that the
+    // scheduler notifies on a guarded exception. Declared after the subsystems
+    // it references so it is destroyed first.
+    diag::FaultStore                   faultStore_;
+    std::unique_ptr<diag::IFaultSink>  faultSink_;
 
     std::shared_mutex moduleMutex_;
 };

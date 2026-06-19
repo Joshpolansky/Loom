@@ -39,6 +39,9 @@ add_library(loom_runtime STATIC
     src/diag/breadcrumb.cpp
     src/diag/crash_handler.cpp
     src/diag/symbolizer.cpp
+    src/diag/fault_report.cpp
+    src/diag/fault_store.cpp
+    src/diag/runtime_fault_sink.cpp
 )
 
 target_include_directories(loom_runtime PUBLIC

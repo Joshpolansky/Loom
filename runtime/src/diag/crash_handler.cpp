@@ -1,5 +1,6 @@
 #include "loom/diag/crash_handler.h"
 #include "loom/diag/breadcrumb.h"
+#include "loom/diag/fault_report.h"
 #include "loom/diag/symbolizer.h"
 #include "loom/version.h"
 
@@ -9,6 +10,8 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <fstream>
+#include <string>
 
 #ifndef LOOM_BUILD_TYPE
 #define LOOM_BUILD_TYPE "unknown"
@@ -46,47 +49,43 @@ void buildIdentityLine(char* buf, size_t n) {
 namespace loom::diag {
 namespace {
 
-void writeReportWin(const char* reason, void* const* frames, unsigned nframes) {
-    HANDLE h = CreateFileA(g_reportPath, GENERIC_WRITE, 0, nullptr,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return;
-    char line[1200];
-    auto put = [&](const char* s) { DWORD w; WriteFile(h, s, (DWORD)std::strlen(s), &w, nullptr); };
+char g_reportId[256] = {};   // crash-report id / filename stem (precomputed at install)
 
+// Build a structured JSON crash report and write it to g_reportPath. The Windows
+// unhandled-exception filter is NOT async-signal-constrained, so we may allocate:
+// symbolize in-process via cpptrace and serialize the same FaultReport the
+// exception path uses, so signal-path crashes surface in /api/faults too.
+void writeReportWin(FaultKind kind, const char* reason, int code,
+                    void* const* frames, unsigned nframes) {
     const Breadcrumb& b = tlsBreadcrumb;  // faulting thread
-    put("=== Loom crash report ===\n");
-    std::snprintf(line, sizeof line, "reason: %s\n", reason); put(line);
-    std::snprintf(line, sizeof line, "module: %s  class: %s  phase: %s  cycle: %llu\n",
-                  b.moduleId ? b.moduleId : "(none/runtime)",
-                  b.className ? b.className : "(none)", phaseName(b.phase),
-                  (unsigned long long)b.cycle); put(line);
-    buildIdentityLine(line, sizeof line); put(line); put("\n");
-    put("frames:\n");
-    // Not signal-constrained here (Windows UEF) — symbolize in-process via cpptrace.
-    auto syms = symbolize(reinterpret_cast<const void* const*>(frames), nframes);
-    for (size_t i = 0; i < syms.size(); ++i) {
-        const SymFrame& f = syms[i];
-        std::snprintf(line, sizeof line, "  #%-2zu 0x%016llx  %s\n",
-                      i, (unsigned long long)f.address,
-                      f.symbol.empty() ? "<unknown>" : f.symbol.c_str());
-        put(line);
-        if (!f.filename.empty()) {
-            std::snprintf(line, sizeof line, "        at %s:%u\n", f.filename.c_str(), f.line);
-            put(line);
-        }
-    }
-    FlushFileBuffers(h);
-    CloseHandle(h);
+
+    FaultReport r;
+    r.id           = g_reportId;
+    r.kind         = kind;
+    r.signalOrCode = code;
+    r.reason       = reason ? reason : "";
+    r.sdkVersion   = loom::kSdkVersion;
+    r.gitSha       = loom::kGitSha;
+    r.buildType    = LOOM_BUILD_TYPE;
+    r.moduleId     = b.moduleId ? b.moduleId : "";
+    r.className    = b.className ? b.className : "";
+    r.phase        = b.phase;
+    r.cycle        = b.cycle;
+    r.frames       = symbolize(reinterpret_cast<const void* const*>(frames), nframes);
+
+    std::string json = toJson(r);
+    std::ofstream f(g_reportPath, std::ios::binary | std::ios::trunc);
+    if (f) f << json;
 }
 
 LONG WINAPI unhandledFilter(EXCEPTION_POINTERS* ep) {
     if (g_reporting.test_and_set()) return EXCEPTION_EXECUTE_HANDLER;
     void* frames[64];
     unsigned n = CaptureStackBackTrace(0, 64, frames, nullptr);
+    const DWORD code = ep ? ep->ExceptionRecord->ExceptionCode : 0UL;
     char reason[64];
-    std::snprintf(reason, sizeof reason, "SEH exception 0x%08lx",
-                  ep ? ep->ExceptionRecord->ExceptionCode : 0UL);
-    writeReportWin(reason, frames, n);
+    std::snprintf(reason, sizeof reason, "SEH exception 0x%08lx", code);
+    writeReportWin(FaultKind::Signal, reason, static_cast<int>(code), frames, n);
     return EXCEPTION_EXECUTE_HANDLER;   // run default handler → terminate
 }
 
@@ -94,7 +93,8 @@ void terminateHandler() {
     if (!g_reporting.test_and_set()) {
         void* frames[64];
         unsigned n = CaptureStackBackTrace(0, 64, frames, nullptr);
-        writeReportWin("std::terminate (unhandled C++ exception)", frames, n);
+        writeReportWin(FaultKind::Signal, "std::terminate (unhandled C++ exception)",
+                       0, frames, n);
     }
     std::abort();
 }
@@ -104,7 +104,9 @@ void terminateHandler() {
 void CrashHandler::install(const CrashConfig& cfg) {
     std::error_code ec;
     std::filesystem::create_directories(cfg.crashDir, ec);
-    auto path = (cfg.crashDir / ("loom-crash-" + std::to_string(GetCurrentProcessId()) + ".txt")).string();
+    std::snprintf(g_reportId, sizeof g_reportId, "loom-crash-%lu",
+                  GetCurrentProcessId());
+    auto path = (cfg.crashDir / (std::string(g_reportId) + ".json")).string();
     std::snprintf(g_reportPath, sizeof g_reportPath, "%s", path.c_str());
     SetUnhandledExceptionFilter(unhandledFilter);
     std::set_terminate(terminateHandler);
