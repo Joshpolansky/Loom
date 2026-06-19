@@ -36,12 +36,17 @@ add_library(loom_runtime STATIC
     src/opcua_rest_server.cpp
     src/oscilloscope.cpp
     src/module_watcher.cpp
+    src/diag/breadcrumb.cpp
+    src/diag/crash_handler.cpp
 )
 
 target_include_directories(loom_runtime PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
+
+# Build type stamped into crash reports (works for single- and multi-config).
+target_compile_definitions(loom_runtime PRIVATE LOOM_BUILD_TYPE="$<CONFIG>")
 
 target_link_libraries(loom_runtime PUBLIC
     loom::sdk

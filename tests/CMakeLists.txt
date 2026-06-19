@@ -9,6 +9,7 @@ add_executable(loom_tests
     test_command_integration.cpp
     test_command_fb.cpp
     test_port.cpp
+    test_diag.cpp
 )
 
 target_include_directories(loom_tests PRIVATE
@@ -32,6 +33,7 @@ target_sources(loom_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/runtime/src/scheduler.cpp
     ${CMAKE_SOURCE_DIR}/runtime/src/scheduler_config.cpp
     ${CMAKE_SOURCE_DIR}/runtime/src/runtime_heap.cpp
+    ${CMAKE_SOURCE_DIR}/runtime/src/diag/breadcrumb.cpp  # scheduler.cpp references diag::tlsBreadcrumb
 )
 
 include(GoogleTest)
