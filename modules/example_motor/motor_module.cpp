@@ -3,7 +3,13 @@
 
 #include "motor_module.hpp"
 
-
+// Demonstrates registerExtension(): a reflectable aggregate the module owns that
+// is NOT part of MotorRuntime, exposed at runtime/ext/...  Mutated only in
+// cyclic() (under the runtime write lock), per the extension threading rule.
+struct MotorExt {
+    double ext_speed_x2 = 0.0;
+    uint64_t ext_ticks  = 0;
+};
 
 // ---- Module implementation ----
 
@@ -13,6 +19,9 @@ public:
 
     void init(const loom::InitContext& /*ctx*/) override {
         runtime_ = MotorRuntime{};
+
+        // Expose ext_ as runtime/ext/{ext_speed_x2,ext_ticks}.
+        registerExtension("ext", ext_);
 
         // Register service for external speed commands
         registerLocalService("set_speed", [this](const MotorRecipe& req) -> loom::CallResult {
@@ -27,6 +36,10 @@ public:
 
     void cyclic() override {
         runtime_.cycle_count++;
+
+        // Update the registered extension (visible live at runtime/ext/...).
+        ext_.ext_ticks++;
+        ext_.ext_speed_x2 = runtime_.current_speed * 2.0;
 
         // Simple motor simulation: ramp speed towards target
         double dt = config_.cycle_rate_ms / 1000.0; // seconds
@@ -81,6 +94,9 @@ public:
     void longRunning() override {
         // No long-running work for this example module
     }
+
+private:
+    MotorExt ext_;  // registered extension target (mutated only in cyclic())
 };
 
 LOOM_REGISTER_MODULE(ExampleMotor)

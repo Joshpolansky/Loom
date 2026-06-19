@@ -15,6 +15,7 @@
 #include <functional>
 #include <cctype>
 #include <iterator>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
@@ -61,6 +62,11 @@ public:
 
     virtual void exit() = 0;
     virtual void longRunning() = 0;
+
+    /// Called by the scheduler instead of init() directly. The Module<> base
+    /// opens the extension-registration window around the user's init() so that
+    /// registerExtension() is only valid during init().
+    virtual void initGuarded(const InitContext& ctx) { init(ctx); }
 
     /// Called by the scheduler instead of cyclic() directly.
     /// The Module<> base acquires runtimeMutex_ so that readField() / readSection(Runtime)
@@ -234,6 +240,74 @@ public:
 
     Summary& summary() { return summary_; }
     const Summary& summary() const { return summary_; }
+
+    // --- Extension registration (call ONLY from init()) ---
+
+    /// Expose a glaze-reflectable object you own as runtime fields at
+    /// runtime/<prefix>/...  Reuses the tag walker, so the debug tree, watch
+    /// panel, IO mapper, and OPC-UA facade see the fields identically to
+    /// first-class runtime fields.
+    ///
+    /// Constraints:
+    ///   - Call ONLY from init() (throws std::logic_error otherwise).
+    ///   - `prefix` must be a single segment (no '/') that does not collide with
+    ///     a runtime field or a previously-registered prefix (throws).
+    ///   - `obj` (a non-const lvalue — temporaries won't bind) must outlive the
+    ///     module and be mutated ONLY from the cyclic chain (preCyclic/cyclic/
+    ///     postCyclic, under the runtime write lock). Do NOT register state
+    ///     mutated from longRunning() or other threads, init() locals, or
+    ///     elements of a reallocating vector.
+    template <typename T>
+    void registerExtension(std::string_view prefix, T& obj) {
+        if (!registrationOpen_)
+            throw std::logic_error("registerExtension() may only be called from init()");
+        if (prefix.empty() || prefix.find('/') != std::string_view::npos)
+            throw std::logic_error("registerExtension(): prefix must be a single non-empty segment");
+        for (std::string_view k : glz::reflect<Runtime>::keys)
+            if (k == prefix)
+                throw std::logic_error("registerExtension(): prefix '" + std::string(prefix) +
+                                       "' collides with a runtime field");
+        for (const auto& r : extension_roots_)
+            if (r == prefix)
+                throw std::logic_error("registerExtension(): prefix '" + std::string(prefix) +
+                                       "' already registered");
+
+        // Build into temporaries so we can validate before committing any state.
+        std::unordered_map<std::string, Tag> tags;
+        std::vector<std::function<bool()>>   staleCheckers;
+
+        // Root tag for <prefix> — tag_register_fields() registers an object's
+        // FIELDS, not the object itself, so this makes the prefix node directly
+        // readable/writable/browsable and lets readSection() serialize it in one
+        // shot. Capturing obj by reference binds the live referent (same as the
+        // main TagTable's field lambdas).
+        Tag rootTag;
+        rootTag.path      = std::string(prefix);
+        rootTag.type_name = glz::name_v<T>;
+        rootTag.get_json  = [&obj]() { return glz::write_json(obj).value_or("{}"); };
+        rootTag.set_json  = [&obj](std::string_view j) {
+            constexpr glz::opts kPermissive{ .error_on_unknown_keys = false,
+                                             .error_on_missing_keys = false };
+            glz::context ctx{};
+            (void)glz::read<kPermissive>(obj, j, ctx);
+        };
+        rootTag.ptr       = [&obj]() -> void* { return &obj; };
+        tags.emplace(std::string(prefix), std::move(rootTag));
+
+        detail::tag_register_fields(obj, std::string(prefix), tags, staleCheckers);
+
+        // Extensions are structurally frozen after init() (there is no refresh
+        // path), so a dynamic container (vector/map/optional) inside the object
+        // would leave element tags dangling on resize. Reject — extensions must
+        // be fixed-layout aggregates.
+        if (!staleCheckers.empty())
+            throw std::logic_error("registerExtension(): '" + std::string(prefix) +
+                "' contains a dynamic container (vector/map/optional); extensions must be "
+                "fixed-layout aggregates");
+
+        extension_roots_.emplace_back(prefix);
+        for (auto& [k, v] : tags) extension_tags_.emplace(k, std::move(v));
+    }
 
     // --- Direct runtime access to sibling modules ---
 
@@ -489,6 +563,42 @@ protected:
     mutable std::optional<TagTable<Recipe>>  recipe_tags_;
     mutable std::optional<TagTable<Runtime>> runtime_tags_;
 
+    // Manually-registered extensions: reflectable objects the module owns that
+    // aren't part of runtime_, exposed at runtime/<prefix>/...  Built once during
+    // init() (registrationOpen_), then structurally frozen — values stay live via
+    // the captured references. See registerExtension().
+    std::unordered_map<std::string, Tag> extension_tags_;
+    std::vector<std::string>             extension_roots_;   // registered prefixes
+    bool registrationOpen_ = false;
+
+    // Capture each registered extension's current JSON. Caller MUST hold
+    // runtimeMutex_ (shared) — get_json() reads the live extension objects.
+    std::vector<std::pair<std::string, std::string>> captureExtensionsLocked() const {
+        std::vector<std::pair<std::string, std::string>> exts;
+        exts.reserve(extension_roots_.size());
+        for (const auto& root : extension_roots_)
+            if (auto it = extension_tags_.find(root); it != extension_tags_.end())
+                exts.emplace_back(root, it->second.get_json());
+        return exts;
+    }
+
+    // Splice "<root>":<obj> into a top-level runtime object JSON. Prefixes are
+    // single-segment and collision-checked, so they're always fresh keys. The key
+    // is JSON-encoded via glz::write_json so an odd prefix can't break the JSON.
+    static std::string spliceExtensions(std::string base,
+                                        const std::vector<std::pair<std::string, std::string>>& exts) {
+        if (exts.empty() || base.empty() || base.back() != '}') return base;
+        base.pop_back();
+        bool needComma = (base.size() > 1); // false when base was just "{"
+        for (const auto& [root, obj] : exts) {
+            if (needComma) base += ",";
+            base += glz::write_json(root).value_or("\"\"") + ":" + obj;
+            needComma = true;
+        }
+        base += "}";
+        return base;
+    }
+
     // Guards runtime_ against concurrent access between cyclic() (write) and
     // readField() / readSection(Runtime) (read) on different threads.
     // shared_mutex allows concurrent reads (WS broadcast + watch thread) while
@@ -512,6 +622,17 @@ protected:
     }
 
 public:
+    /// Opens the extension-registration window for the duration of the user's
+    /// init(), so registerExtension() is only valid during init(). init() runs
+    /// single-threaded before any worker thread touches the module, so no lock
+    /// is needed here.
+    void initGuarded(const InitContext& ctx) override {
+        registrationOpen_ = true;
+        // Reset the window even if init() throws (registerExtension throws on misuse).
+        struct Closer { bool& f; ~Closer() { f = false; } } closer{registrationOpen_};
+        init(ctx);
+    }
+
     /// The scheduler calls this instead of cyclic() directly so that runtime_
     /// reads from other threads (readField, readSection) are not racing with writes.
     void cyclicGuarded() override {
@@ -546,13 +667,16 @@ public:
                 return glz::write_json(snap).value_or("{}");
             }
             case DataSection::Runtime: {
-                // Copy runtime_ under a brief shared lock, then serialize the
-                // snapshot outside the lock.  Cyclic() is only blocked for the
-                // duration of the struct copy, not the (potentially slow)
-                // JSON serialization.
+                // Copy runtime_ and snapshot extension values under a brief shared
+                // lock, then serialize + splice outside the lock.
                 Runtime snap;
-                { std::shared_lock lk(runtimeMutex_); snap = runtime_; }
-                return glz::write_json(snap).value_or("{}");
+                std::vector<std::pair<std::string, std::string>> exts;
+                {
+                    std::shared_lock lk(runtimeMutex_);
+                    snap = runtime_;
+                    exts = captureExtensionsLocked();
+                }
+                return spliceExtensions(glz::write_json(snap).value_or("{}"), exts);
             }
             case DataSection::Summary: {
                 Summary snap;
@@ -612,7 +736,13 @@ public:
         if (!key.empty() && key.front() == '/') key.erase(0, 1);
         if (section == DataSection::Config)  { ensureTagTableBuilt(DataSection::Config);  return config_tags_->ptr(key); }
         if (section == DataSection::Recipe)  { ensureTagTableBuilt(DataSection::Recipe);  return recipe_tags_->ptr(key); }
-        if (section == DataSection::Runtime) { ensureTagTableBuilt(DataSection::Runtime); return runtime_tags_->ptr(key); }
+        if (section == DataSection::Runtime) {
+            ensureTagTableBuilt(DataSection::Runtime);
+            if (void* p = runtime_tags_->ptr(key)) return p;
+            if (auto it = extension_tags_.find(key); it != extension_tags_.end())
+                if (void* p = it->second.ptr()) return p;
+            return std::nullopt;
+        }
         return std::nullopt;
     }
 
@@ -621,7 +751,13 @@ public:
         if (!key.empty() && key.front() == '/') key.erase(0, 1);
         if (section == DataSection::Config)  { ensureTagTableBuilt(DataSection::Config);  if (auto t = config_tags_->type_of(key))  return std::string(*t); return std::nullopt; }
         if (section == DataSection::Recipe)  { ensureTagTableBuilt(DataSection::Recipe);  if (auto t = recipe_tags_->type_of(key))  return std::string(*t); return std::nullopt; }
-        if (section == DataSection::Runtime) { ensureTagTableBuilt(DataSection::Runtime); if (auto t = runtime_tags_->type_of(key)) return std::string(*t); return std::nullopt; }
+        if (section == DataSection::Runtime) {
+            ensureTagTableBuilt(DataSection::Runtime);
+            if (auto t = runtime_tags_->type_of(key)) return std::string(*t);
+            if (auto it = extension_tags_.find(key); it != extension_tags_.end())
+                return std::string(it->second.type_name);
+            return std::nullopt;
+        }
         return std::nullopt;
     }
 
@@ -645,9 +781,15 @@ public:
         if (section == DataSection::Runtime) {
             std::unique_lock lk(runtimeMutex_);
             ensureTagTableBuilt(DataSection::Runtime);
-            bool ok = runtime_tags_->write_json(key, json);
-            if (ok) refreshTraceCache(DataSection::Runtime);
-            return ok;
+            if (runtime_tags_->write_json(key, json)) {
+                refreshTraceCache(DataSection::Runtime);
+                return true;
+            }
+            if (auto it = extension_tags_.find(key); it != extension_tags_.end()) {
+                it->second.set_json(json);
+                return true;
+            }
+            return false;
         }
         return false;
     }
@@ -672,8 +814,13 @@ public:
         if (section == DataSection::Runtime) {
             std::shared_lock lk(runtimeMutex_);
             ensureTagTableBuilt(DataSection::Runtime);
-            return key.empty() ? std::optional<std::string>(glz::write_json(runtime_).value_or("{}"))
-                               : runtime_tags_->read_json(key);
+            if (key.empty())  // whole section — include extensions (lock already held)
+                return spliceExtensions(glz::write_json(runtime_).value_or("{}"),
+                                        captureExtensionsLocked());
+            if (auto v = runtime_tags_->read_json(key)) return v;
+            if (auto it = extension_tags_.find(key); it != extension_tags_.end())
+                return it->second.get_json();
+            return std::nullopt;
         }
         return std::nullopt;
     }

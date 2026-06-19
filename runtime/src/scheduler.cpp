@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <shared_mutex>
 
 // ---- Platform-specific RT and affinity helpers ----------------------------------
@@ -220,9 +221,18 @@ bool Scheduler::start(LoadedModule& mod, const TaskConfig& config, const InitCon
         return false;
     }
 
-    // Init module before any thread touches it.
+    // Init module before any thread touches it. initGuarded() opens the
+    // extension-registration window around the user's init().
     spdlog::info("Initializing module '{}' (reason: {})", mod.id, static_cast<int>(ctx.reason));
-    mod.instance->init(ctx);
+    try {
+        mod.instance->initGuarded(ctx);
+    } catch (const std::exception& e) {
+        // A throwing init() (e.g. registerExtension misuse) must not unwind out
+        // of the scheduler and terminate the runtime — fail this module cleanly.
+        spdlog::error("Module '{}' init() failed: {}", mod.id, e.what());
+        mod.state = ModuleState::Error;
+        return false;
+    }
     mod.state = ModuleState::Initialized;
 
     // Create fresh TaskState (unique_ptr for pointer stability).
