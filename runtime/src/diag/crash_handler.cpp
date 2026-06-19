@@ -120,13 +120,21 @@ void CrashHandler::install(const CrashConfig& cfg) {
 #include <csignal>
 #include <cstdlib>
 #include <execinfo.h>
+#include <fcntl.h>      // open(), O_WRONLY/O_CREAT/O_TRUNC (not transitively included on macOS)
 #include <unistd.h>
 
 namespace loom::diag {
 namespace {
 
 // async-signal-safe helpers --------------------------------------------------
-void sWrite(int fd, const char* s) { ssize_t r = ::write(fd, s, std::strlen(s)); (void)r; }
+// NB: std::strlen is NOT in the POSIX async-signal-safe list, so compute the
+// length with a plain loop (which is) before the single write().
+void sWrite(int fd, const char* s) {
+    if (!s) return;
+    size_t n = 0;
+    while (s[n]) ++n;
+    ssize_t r = ::write(fd, s, n); (void)r;
+}
 void sWriteHex(int fd, uintptr_t v) {
     char buf[2 + sizeof(uintptr_t) * 2]; buf[0] = '0'; buf[1] = 'x';
     const char* hex = "0123456789abcdef";
@@ -189,7 +197,11 @@ void CrashHandler::install(const CrashConfig& cfg) {
     backtrace(g_primeFrames, 4);
 
     // Alternate signal stack so a stack-overflow SIGSEGV still has stack to run.
-    static char altStack[SIGSTKSZ < 65536 ? 65536 : SIGSTKSZ];
+    // Use a fixed compile-time size: since glibc 2.34, SIGSTKSZ expands to a
+    // sysconf() call (not a constant), so it can't size a static array. 64 KiB
+    // comfortably exceeds SIGSTKSZ on every supported platform.
+    static constexpr size_t kAltStackSize = 64 * 1024;
+    static char altStack[kAltStackSize];
     stack_t ss{}; ss.ss_sp = altStack; ss.ss_size = sizeof altStack; ss.ss_flags = 0;
     sigaltstack(&ss, nullptr);
 

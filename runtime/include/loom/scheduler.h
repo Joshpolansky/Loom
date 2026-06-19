@@ -77,9 +77,13 @@ struct TaskState {
     std::atomic<int64_t>  lastJitterUs{0};      ///< |actualStart − prevStart| − period (µs)
     std::atomic<int64_t>  lastCyclicStartNs{0}; ///< Used internally to compute per-module jitter
 
-    // Last-fault diagnostics (set when a guarded call throws; surfaced by the
-    // server). lastFaultMsg is written under the class thread and read by the
-    // server thread — a benign race for a diagnostic string.
+    // Last-fault diagnostics, written by the faulting worker thread in
+    // Scheduler::recordModuleFault() and read by the server thread.
+    // Synchronization: recordModuleFault writes these fields, THEN stores
+    // `faulted` with memory_order_release. Readers MUST load `faulted` with
+    // acquire and read these only when it is true. A module faults at most once
+    // (it is skipped afterward), so lastFaultMsg is effectively write-once —
+    // hence safe to read as a plain buffer after observing faulted==true.
     std::atomic<int64_t>  lastFaultMs{0};       ///< system_clock ms of last fault (0 = none)
     std::atomic<uint8_t>  lastFaultPhase{0};    ///< Phase value at fault
     char                  lastFaultMsg[256] = {};

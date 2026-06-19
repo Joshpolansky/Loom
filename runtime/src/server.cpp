@@ -276,11 +276,17 @@ static std::string moduleInfoJson(const LoadedModule& mod, const Scheduler& sche
         json += ",\"lastJitterUs\":" + std::to_string(ts->lastJitterUs.load());
 
         // Last-fault diagnostics (faulted modules are skipped by the scheduler).
-        json += ",\"faulted\":" + std::string(ts->faulted.load() ? "true" : "false");
-        json += ",\"lastFaultMs\":" + std::to_string(ts->lastFaultMs.load());
-        json += ",\"lastFaultPhase\":\"" +
-                std::string(diag::phaseName(static_cast<diag::Phase>(ts->lastFaultPhase.load()))) + "\"";
-        json += ",\"lastFaultMsg\":\"" + jsonEscapeString(ts->lastFaultMsg) + "\"";
+        // Acquire-load `faulted` and read the last-fault fields only when set:
+        // this pairs with the release store in Scheduler::recordModuleFault so we
+        // never read a half-written lastFaultMsg (see scheduler.h).
+        const bool faulted = ts->faulted.load(std::memory_order_acquire);
+        json += ",\"faulted\":" + std::string(faulted ? "true" : "false");
+        if (faulted) {
+            json += ",\"lastFaultMs\":" + std::to_string(ts->lastFaultMs.load());
+            json += ",\"lastFaultPhase\":\"" +
+                    std::string(diag::phaseName(static_cast<diag::Phase>(ts->lastFaultPhase.load()))) + "\"";
+            json += ",\"lastFaultMsg\":\"" + jsonEscapeString(ts->lastFaultMsg) + "\"";
+        }
 
         // Add cycle history
         {

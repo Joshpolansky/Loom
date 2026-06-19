@@ -170,9 +170,10 @@ void Scheduler::setIOMapper(IOMapper* mapper) {
 
 void Scheduler::recordModuleFault(TaskState& state, LoadedModule& mod,
                                   diag::Phase phase, std::string_view message) {
-    state.faulted.store(true);
-    mod.state = ModuleState::Error;
-
+    // Write the fault details FIRST, then publish `faulted` with release. A
+    // reader (the server) that observes faulted==true with acquire is then
+    // guaranteed to see a fully-written lastFaultMsg. A module faults at most
+    // once (it's skipped thereafter), so these fields are effectively write-once.
     const int64_t nowMs = static_cast<int64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count());
@@ -183,6 +184,8 @@ void Scheduler::recordModuleFault(TaskState& state, LoadedModule& mod,
         std::memcpy(state.lastFaultMsg, message.data(), n);
         state.lastFaultMsg[n] = '\0';
     }
+    mod.state = ModuleState::Error;
+    state.faulted.store(true, std::memory_order_release);  // publish last
 
     spdlog::error("Module '{}' faulted in {}: {}",
                   mod.id, diag::phaseName(phase), message);
