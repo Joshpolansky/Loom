@@ -38,6 +38,7 @@ add_library(loom_runtime STATIC
     src/module_watcher.cpp
     src/diag/breadcrumb.cpp
     src/diag/crash_handler.cpp
+    src/diag/symbolizer.cpp
 )
 
 target_include_directories(loom_runtime PUBLIC
@@ -54,6 +55,10 @@ target_link_libraries(loom_runtime PUBLIC
     Crow::Crow
     ${CMAKE_DL_LIBS}
 )
+
+# Symbolization for crash reports. PRIVATE: confined to the diag symbolizer TU,
+# never exposed in loom_runtime's public headers (SDK/consumers stay clean of it).
+target_link_libraries(loom_runtime PRIVATE cpptrace::cpptrace)
 
 # ---------------------------------------------------------------------------
 # Thin executable — just calls loom::run(argc, argv).

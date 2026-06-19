@@ -22,6 +22,7 @@ class LoomRuntimeConan(ConanFile):
         self.requires(f"loom/{self.version}@local/stable", transitive_headers=True)
         self.requires("spdlog/1.17.0", transitive_headers=True)
         self.requires("crowcpp-crow/1.3.0", transitive_headers=True)
+        self.requires("cpptrace/0.8.3")  # impl-only: crash-report symbolization (not in public headers)
 
     def layout(self):
         cmake_layout(self)

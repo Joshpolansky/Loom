@@ -55,6 +55,7 @@ find_package(glaze REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(GTest REQUIRED)
 find_package(Crow REQUIRED)
+find_package(cpptrace REQUIRED)  # runtime-only: crash-report symbolization
 
 add_subdirectory(sdk)
 add_subdirectory(runtime)

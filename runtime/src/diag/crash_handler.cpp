@@ -1,5 +1,6 @@
 #include "loom/diag/crash_handler.h"
 #include "loom/diag/breadcrumb.h"
+#include "loom/diag/symbolizer.h"
 #include "loom/version.h"
 
 #include <atomic>
@@ -60,10 +61,19 @@ void writeReportWin(const char* reason, void* const* frames, unsigned nframes) {
                   b.className ? b.className : "(none)", phaseName(b.phase),
                   (unsigned long long)b.cycle); put(line);
     buildIdentityLine(line, sizeof line); put(line); put("\n");
-    put("frames (raw addresses — symbolize offline with matching PDBs):\n");
-    for (unsigned i = 0; i < nframes; ++i) {
-        std::snprintf(line, sizeof line, "  #%-2u 0x%p\n", i, frames[i]);
+    put("frames:\n");
+    // Not signal-constrained here (Windows UEF) — symbolize in-process via cpptrace.
+    auto syms = symbolize(reinterpret_cast<const void* const*>(frames), nframes);
+    for (size_t i = 0; i < syms.size(); ++i) {
+        const SymFrame& f = syms[i];
+        std::snprintf(line, sizeof line, "  #%-2zu 0x%016llx  %s\n",
+                      i, (unsigned long long)f.address,
+                      f.symbol.empty() ? "<unknown>" : f.symbol.c_str());
         put(line);
+        if (!f.filename.empty()) {
+            std::snprintf(line, sizeof line, "        at %s:%u\n", f.filename.c_str(), f.line);
+            put(line);
+        }
     }
     FlushFileBuffers(h);
     CloseHandle(h);
