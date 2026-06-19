@@ -333,6 +333,11 @@ void Scheduler::startClasses() {
 
 bool Scheduler::stop(const std::string& moduleId) {
     std::thread cyclicToJoin, longRunToJoin;
+    // Keep the TaskState alive until AFTER the threads are joined: the cyclic /
+    // long-running threads hold a raw TaskState* (running flag, fault fields), so
+    // destroying it before the join is a use-after-free. We extract the owning
+    // unique_ptr into this local and let it drop at end of function, post-join.
+    std::unique_ptr<TaskState> stateToFree;
 
     {
         std::lock_guard lock(mutex_);
@@ -369,11 +374,16 @@ bool Scheduler::stop(const std::string& moduleId) {
 
         spdlog::info("Module '{}' stopped ({} cycles, {} overruns)",
                      moduleId, state.cycleCount.load(), state.overrunCount.load());
-        tasks_.erase(moduleId);
+        // Transfer ownership out of the map (keeps the TaskState object alive via
+        // stateToFree) before erasing the now-empty slot.
+        stateToFree = std::move(stateIt->second);
+        tasks_.erase(stateIt);
         configs_.erase(moduleId);
     }
 
-    // Join outside the lock so we don't block the mutex.
+    // Join outside the lock so we don't block the mutex. stateToFree keeps the
+    // TaskState valid for the threads until they have fully exited here, after
+    // which it is destroyed.
     if (cyclicToJoin.joinable())  cyclicToJoin.join();
     if (longRunToJoin.joinable()) longRunToJoin.join();
 
@@ -983,18 +993,22 @@ void Scheduler::isolatedLoop(LoadedModule& mod, TaskConfig config, TaskState& st
         }
         auto t1 = std::chrono::steady_clock::now();
 
-        // Execute I/O mappings for this isolated module
-        if (ioMapper_) {
-            ioMapper_->executeForModule(mod.id);
-        }
+        // Once quarantined, skip I/O mappings + sampling too (the class loop skips
+        // faulted members entirely) — don't keep touching a module in an error state.
+        if (!state.faulted.load()) {
+            // Execute I/O mappings for this isolated module
+            if (ioMapper_) {
+                ioMapper_->executeForModule(mod.id);
+            }
 
-        // Sample this isolated module using oscilloscope fast-path.
-        // The isolated thread owns this module exclusively; state.running guards lifetime.
-        if (oscilloscope_ && dataEngine_) {
-            int64_t nowMs = static_cast<int64_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count());
-            oscilloscope_->sampleModule(mod.id, *dataEngine_, *mod.instance, nowMs);
+            // Sample this isolated module using oscilloscope fast-path.
+            // The isolated thread owns this module exclusively; state.running guards lifetime.
+            if (oscilloscope_ && dataEngine_) {
+                int64_t nowMs = static_cast<int64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count());
+                oscilloscope_->sampleModule(mod.id, *dataEngine_, *mod.instance, nowMs);
+            }
         }
 
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0);

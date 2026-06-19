@@ -148,7 +148,10 @@ char  g_buildId[256] = {};   // precomputed at install (no formatting in handler
 void* g_primeFrames[4];      // backtrace priming target
 
 void handler(int sig, siginfo_t*, void*) {
-    if (g_reporting.test_and_set()) { signal(sig, SIG_DFL); raise(sig); _exit(128 + sig); }
+    // Re-raise with kill() (async-signal-safe); the handler was installed with
+    // SA_RESETHAND, so the disposition is already SIG_DFL — no signal() needed
+    // (signal() is NOT async-signal-safe).
+    if (g_reporting.test_and_set()) { kill(getpid(), sig); _exit(128 + sig); }
     int fd = ::open(g_reportPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) {
         const Breadcrumb& b = tlsBreadcrumb;
@@ -164,8 +167,10 @@ void handler(int sig, siginfo_t*, void*) {
         for (int i = 0; i < n; ++i) { sWrite(fd, "  "); sWriteHex(fd, (uintptr_t)frames[i]); sWrite(fd, "\n"); }
         ::close(fd);
     }
-    signal(sig, SIG_DFL);
-    raise(sig);          // re-raise for a core dump with default disposition
+    // Re-raise for a core dump with the default disposition. SA_RESETHAND already
+    // reset it to SIG_DFL on entry, so just kill(getpid(), sig) — async-signal-safe,
+    // unlike signal()/raise().
+    kill(getpid(), sig);
     _exit(128 + sig);
 }
 

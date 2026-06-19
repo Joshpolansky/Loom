@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <string>
+#include <string_view>
 
 #ifndef LOOM_BUILD_TYPE
 #define LOOM_BUILD_TYPE "unknown"
@@ -28,6 +29,20 @@ std::string safeRead(DataEngine& engine, const std::string& id, DataSection sec)
         return {};
     }
 }
+
+// The report id becomes a filename (<crashDir>/<id>.json), and the module
+// portion ultimately comes from the HTTP instantiate request body — so a '/' or
+// '..' could escape the crash directory. Map anything outside a safe set to '_'.
+std::string sanitizeForFilename(std::string_view s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                        (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+        out += ok ? c : '_';
+    }
+    return out.empty() ? std::string{"module"} : out;
+}
 } // namespace
 
 void RuntimeFaultSink::onModuleFault(const FaultEvent& ev) {
@@ -37,7 +52,7 @@ void RuntimeFaultSink::onModuleFault(const FaultEvent& ev) {
                 std::chrono::system_clock::now().time_since_epoch()).count());
 
         FaultReport r;
-        r.id           = ev.moduleId + "-" + std::to_string(nowMs) + "-" +
+        r.id           = sanitizeForFilename(ev.moduleId) + "-" + std::to_string(nowMs) + "-" +
                          std::to_string(seq_.fetch_add(1, std::memory_order_relaxed));
         r.tsMs         = nowMs;
         r.kind         = FaultKind::Exception;

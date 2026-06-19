@@ -101,9 +101,18 @@ std::string FaultStore::record(const FaultReport& report) noexcept {
         std::string json = toJson(report);
         {
             std::lock_guard lock(mx_);
-            auto path = crashDir_ / (report.id + ".json");
-            std::ofstream f(path, std::ios::binary | std::ios::trunc);
-            if (f) f << json;
+            const auto path = crashDir_ / (report.id + ".json");
+            bool persisted = false;
+            {
+                std::ofstream f(path, std::ios::binary | std::ios::trunc);
+                if (f) { f << json; persisted = static_cast<bool>(f); }
+            }
+            // Keep the in-memory entry regardless (a fault that happened must stay
+            // visible in /api/faults for this run), but surface a persistence
+            // failure rather than silently implying the report was saved to disk.
+            if (!persisted)
+                spdlog::warn("FaultStore: fault '{}' kept in memory only — failed to write {}",
+                             report.id, path.string());
             entries_.push_back({summarize(report.id, json), std::move(json)});
         }
         return report.id;
