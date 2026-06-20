@@ -127,8 +127,17 @@ void CrashHandler::install(const CrashConfig& cfg) {
 #include <cstdlib>
 #include <execinfo.h>
 #include <fcntl.h>      // open(), O_WRONLY/O_CREAT/O_TRUNC (not transitively included on macOS)
-#include <ucontext.h>   // faulting register state (PC/FP) for the in-context unwind
 #include <unistd.h>
+
+// Faulting register state (PC/FP) for the in-context unwind. macOS's <ucontext.h>
+// hard-errors unless _XOPEN_SOURCE is defined (it guards the deprecated
+// get/setcontext routines), so pull just the mcontext TYPES from <sys/ucontext.h>
+// there; glibc's <ucontext.h> is fine (REG_RIP/REG_RBP need _GNU_SOURCE, set above).
+#if defined(__APPLE__)
+#  include <sys/ucontext.h>
+#else
+#  include <ucontext.h>
+#endif
 
 #if defined(__APPLE__) && defined(__aarch64__) && __has_include(<ptrauth.h>)
 #  include <ptrauth.h>   // strip pointer-auth bits from return addresses (arm64e)
