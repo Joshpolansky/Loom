@@ -13,15 +13,8 @@ add_subdirectory(sequencer)
 add_subdirectory(stack_light)
 
 # Debug info for these modules comes from the global flags in the root
-# CMakeLists (LOOM_WITH_DEBUG_INFO). On macOS, additionally emit a .dSYM next to
-# each module binary so crash frames in module code resolve to file:line
-# (no-op on Linux/Windows). Listed explicitly so we don't dsymutil third-party
-# targets (e.g. SOEM under ethercat).
-if(COMMAND loom_target_dsym)
-    foreach(_loom_mod class_based command_probe crasher ethercat example_motor
-                      oscilloscope pneumatic_actuator sequencer stack_light)
-        if(TARGET ${_loom_mod})
-            loom_target_dsym(${_loom_mod})
-        endif()
-    endforeach()
-endif()
+# CMakeLists (LOOM_WITH_DEBUG_INFO): a .pdb on Windows, embedded DWARF on Linux.
+# macOS .dSYM bundles are produced for the distributed binaries in the CI staging
+# step (dsymutil) — not here, because add_custom_command(TARGET) can't attach to
+# a target created in a module subdirectory. Local macOS dev resolves via the
+# debug map in the build tree, so no .dSYM is needed for development.
