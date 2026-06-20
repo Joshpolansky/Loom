@@ -1,3 +1,9 @@
+// Must precede any libc header: exposes the glibc REG_RIP/REG_RBP mcontext enum
+// used by the in-context stack unwind on Linux/x86_64.
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#  define _GNU_SOURCE
+#endif
+
 #include "loom/diag/crash_handler.h"
 #include "loom/diag/breadcrumb.h"
 #include "loom/diag/fault_report.h"
@@ -121,7 +127,13 @@ void CrashHandler::install(const CrashConfig& cfg) {
 #include <cstdlib>
 #include <execinfo.h>
 #include <fcntl.h>      // open(), O_WRONLY/O_CREAT/O_TRUNC (not transitively included on macOS)
+#include <ucontext.h>   // faulting register state (PC/FP) for the in-context unwind
 #include <unistd.h>
+
+#if defined(__APPLE__) && defined(__aarch64__) && __has_include(<ptrauth.h>)
+#  include <ptrauth.h>   // strip pointer-auth bits from return addresses (arm64e)
+#  define LOOM_HAVE_PTRAUTH 1
+#endif
 
 namespace loom::diag {
 namespace {
@@ -177,22 +189,78 @@ void writeRawReport(int sig, void* const* frames, int n) {
     ::close(fd);
 }
 
-void handler(int sig, siginfo_t*, void*) {
+// Strip ARM pointer-authentication bits from a return address so cpptrace can
+// resolve it (no-op off Apple arm64e).
+inline uintptr_t stripPac(uintptr_t p) {
+#if defined(LOOM_HAVE_PTRAUTH)
+    return reinterpret_cast<uintptr_t>(
+        ptrauth_strip(reinterpret_cast<void*>(p), ptrauth_key_return_address));
+#else
+    return p;
+#endif
+}
+
+// Capture a stack trace starting from the FAULTING context rather than the
+// handler's own stack. backtrace() walks the handler stack: crossing the signal
+// trampoline it recovers only the caller's return address (losing the real fault
+// site), and the alternate signal stack (SA_ONSTACK) is discontinuous from the
+// faulting thread's stack so its frame-pointer walk degrades into a 0x0 tail.
+// Seeding from ucontext's saved PC + FP and walking the frame-record chain
+// (`[fp] = caller fp`, `[fp + 8] = return address`) sidesteps both. Async-signal-
+// safe: only aligned reads, no allocation. Returns 0 on an unknown platform so
+// the caller can fall back to backtrace().
+unsigned captureFromContext(void* ucv, void** frames, unsigned max) {
+    if (!ucv || max == 0) return 0;
+    auto* uc = static_cast<ucontext_t*>(ucv);
+    uintptr_t pc = 0, fp = 0;
+
+#if defined(__APPLE__) && defined(__aarch64__)
+    const auto& ss = uc->uc_mcontext->__ss;
+    pc = ss.__pc; fp = ss.__fp;                       // x29
+#elif defined(__APPLE__) && defined(__x86_64__)
+    const auto& ss = uc->uc_mcontext->__ss;
+    pc = ss.__rip; fp = ss.__rbp;
+#elif defined(__linux__) && defined(__aarch64__)
+    pc = uc->uc_mcontext.pc; fp = uc->uc_mcontext.regs[29];
+#elif defined(__linux__) && defined(__x86_64__)
+    pc = uc->uc_mcontext.gregs[REG_RIP]; fp = uc->uc_mcontext.gregs[REG_RBP];
+#else
+    (void)uc;                                          // unknown → fall back
+#endif
+
+    if (pc == 0 && fp == 0) return 0;
+
+    unsigned n = 0;
+    if (pc) frames[n++] = reinterpret_cast<void*>(stripPac(pc));   // real fault site (leaf)
+    while (fp && (fp & (sizeof(void*) - 1)) == 0 && n < max) {
+        const uintptr_t next = *reinterpret_cast<uintptr_t*>(fp);
+        const uintptr_t ret  = *reinterpret_cast<uintptr_t*>(fp + sizeof(void*));
+        if (ret == 0) break;
+        frames[n++] = reinterpret_cast<void*>(stripPac(ret));
+        if (next <= fp) break;                         // must move up-stack (stops runaway)
+        fp = next;
+    }
+    return n;
+}
+
+void handler(int sig, siginfo_t*, void* ucv) {
     // Re-raise with kill() (async-signal-safe); the handler was installed with
     // SA_RESETHAND, so the disposition is already SIG_DFL — no signal() needed
     // (signal() is NOT async-signal-safe).
     if (g_reporting.test_and_set()) { kill(getpid(), sig); _exit(128 + sig); }
 
+    // Unwind from the faulting context (keeps the leaf frame); fall back to
+    // backtrace() on platforms we don't have register layouts for.
     void* frames[64];
-    int n = backtrace(frames, 64);
+    unsigned n = captureFromContext(ucv, frames, 64);
+    if (n == 0) n = static_cast<unsigned>(backtrace(frames, 64));
 
     // 1. Guaranteed: async-signal-safe raw report.
-    writeRawReport(sig, frames, n);
+    writeRawReport(sig, frames, static_cast<int>(n));
     // 2. Best-effort: structured + symbolized JSON (mirrors Windows). cpptrace
     //    allocates — not strictly async-signal-safe, but works for the common
     //    (non-heap-corruption) crash; the raw report above is the fallback.
-    writeStructuredReport(FaultKind::Signal, signalName(sig), sig,
-                          frames, static_cast<unsigned>(n));
+    writeStructuredReport(FaultKind::Signal, signalName(sig), sig, frames, n);
 
     // Re-raise for a core dump with the default disposition (async-signal-safe).
     kill(getpid(), sig);
