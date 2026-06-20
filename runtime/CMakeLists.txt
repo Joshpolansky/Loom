@@ -69,6 +69,13 @@ target_link_libraries(loom_runtime PRIVATE cpptrace::cpptrace)
 add_executable(loom src/main.cpp)
 target_link_libraries(loom PRIVATE loom_runtime)
 
+# macOS: emit loom.dSYM next to the binary for in-process crash symbolization
+# (Windows PDB / Linux DWARF are produced by the global debug-info flags). Guarded
+# so a standalone runtime build (without the root helper) still configures.
+if(COMMAND loom_target_dsym)
+    loom_target_dsym(loom)
+endif()
+
 # ---------------------------------------------------------------------------
 # Frontend UI — symlink data/UI → frontend/dist for live development editing.
 # On install, the dist contents are copied instead (see install rule below).
@@ -116,6 +123,17 @@ install(DIRECTORY include/
 install(TARGETS loom
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+# Ship debug symbols next to the binary so crash reports symbolize in-process on
+# the downloaded runtime. OPTIONAL: absent when LOOM_WITH_DEBUG_INFO is OFF.
+# (Linux needs nothing extra — DWARF is embedded in the unstripped binary.)
+if(MSVC)
+    install(FILES $<TARGET_PDB_FILE:loom>
+        DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
+elseif(APPLE)
+    install(DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/loom.dSYM
+        DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
+endif()
 
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/frontend/dist/"
     DESTINATION data/UI
