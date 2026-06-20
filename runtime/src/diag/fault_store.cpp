@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <system_error>
 
@@ -68,6 +69,14 @@ void FaultStore::scanDir() {
     std::error_code ec;
     if (!std::filesystem::exists(crashDir_, ec)) return;
 
+    // First pass: note which stems have a structured .json so a sibling .txt
+    // (the POSIX async-signal-safe fallback) can be suppressed in its favor.
+    std::set<std::string> jsonStems;
+    for (const auto& de : std::filesystem::directory_iterator(crashDir_, ec)) {
+        if (ec || !de.is_regular_file()) continue;
+        if (de.path().extension() == ".json") jsonStems.insert(de.path().stem().string());
+    }
+
     for (const auto& de : std::filesystem::directory_iterator(crashDir_, ec)) {
         if (ec || !de.is_regular_file()) continue;
         const auto& path = de.path();
@@ -78,8 +87,9 @@ void FaultStore::scanDir() {
             std::string json = readFile(path);
             entries_.push_back({summarize(stem, json), std::move(json)});
         } else if (ext == ".txt" && stem.rfind("loom-crash-", 0) == 0) {
-            // POSIX signal-path report (raw addresses) — wrap the text so the
-            // viewer can show it; symbolize offline via `loom --symbolize`.
+            // POSIX signal-path raw fallback. Skip it if the structured .json for
+            // the same crash exists (it supersedes the raw addresses).
+            if (jsonStems.count(stem)) continue;
             std::string raw = readFile(path);
             std::string wrapped = glz::write_json(
                 std::map<std::string, std::string>{{"id", stem},
