@@ -92,6 +92,7 @@ write_basic_package_version_file(
 install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/loomConfig.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/loomConfigVersion.cmake
+    ${CMAKE_SOURCE_DIR}/cmake/LoomModule.cmake
     DESTINATION ${CONFIG_INSTALL_DIR}
 )
 

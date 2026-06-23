@@ -117,6 +117,15 @@ install(TARGETS loom
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
+# Ship the Windows PDB next to the binary so crash reports symbolize in-process
+# on the downloaded runtime. OPTIONAL: absent when LOOM_WITH_DEBUG_INFO is OFF.
+# Linux DWARF is embedded in the unstripped binary; the macOS .dSYM is produced
+# from the binary in the CI staging step (dsymutil).
+if(MSVC)
+    install(FILES $<TARGET_PDB_FILE:loom>
+        DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
+endif()
+
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/frontend/dist/"
     DESTINATION data/UI
     OPTIONAL

@@ -33,3 +33,8 @@ include("${CMAKE_CURRENT_LIST_DIR}/LoomSdkTargets.cmake")
 if(NOT TARGET loom::sdk)
   message(FATAL_ERROR "The imported target loom::sdk was not found")
 endif()
+
+# loom_add_module() + crash-symbolization debug-info helpers. Lets module authors
+# build plugins the same way the bundled modules are, with PDB/DWARF/dSYM emitted
+# next to the binary so a crashing module resolves to file:line in-process.
+include("${CMAKE_CURRENT_LIST_DIR}/LoomModule.cmake")

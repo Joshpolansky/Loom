@@ -38,6 +38,36 @@ if(MSVC)
     string(APPEND CMAKE_MODULE_LINKER_FLAGS_DEBUG " /DEBUG")
 endif()
 
+# Module-build helpers (loom_add_module, debug-info + dSYM) — shared with module
+# authors via the SDK install. Defines the LOOM_WITH_DEBUG_INFO option.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+include(LoomModule)
+
+# Emit debug info for crash symbolization in OPTIMIZED configs too (Debug always
+# has it), so release/downloaded runtimes still produce readable crash traces.
+# Symbols are shipped next to the binaries (install rules + CI staging). This is
+# metadata, not code — no effect on runtime speed, only binary/file size.
+if(LOOM_WITH_DEBUG_INFO)
+    if(MSVC)
+        foreach(cfg RELEASE RELWITHDEBINFO MINSIZEREL)
+            string(APPEND CMAKE_C_FLAGS_${cfg}             " /Zi")
+            string(APPEND CMAKE_CXX_FLAGS_${cfg}           " /Zi")
+            # /OPT:REF,ICF keeps the optimized image lean (the linker turns them
+            # off once /DEBUG is present).
+            string(APPEND CMAKE_EXE_LINKER_FLAGS_${cfg}    " /DEBUG /OPT:REF /OPT:ICF")
+            string(APPEND CMAKE_SHARED_LINKER_FLAGS_${cfg} " /DEBUG /OPT:REF /OPT:ICF")
+            string(APPEND CMAKE_MODULE_LINKER_FLAGS_${cfg} " /DEBUG /OPT:REF /OPT:ICF")
+        endforeach()
+    else()
+        # Linux: DWARF embedded in the (unstripped) binary. macOS: -g leaves DWARF
+        # in the .o files; a .dSYM is produced per target by loom_target_dsym().
+        foreach(cfg RELEASE RELWITHDEBINFO)
+            string(APPEND CMAKE_C_FLAGS_${cfg}   " -g")
+            string(APPEND CMAKE_CXX_FLAGS_${cfg} " -g")
+        endforeach()
+    endif()
+endif()
+
 # Platform-appropriate suffix for Loom module plugins (.dll on Windows, .so elsewhere)
 if(WIN32)
     set(LOOM_MODULE_SUFFIX ".dll")

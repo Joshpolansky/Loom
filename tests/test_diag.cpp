@@ -6,7 +6,9 @@
 #include <glaze/glaze.hpp>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 
@@ -143,6 +145,48 @@ TEST(DiagFaultStore, RecordListDetailRoundTrip) {
     FaultStore reopened(dir);
     ASSERT_EQ(reopened.list().size(), 1u);
     EXPECT_EQ(reopened.list()[0].id, "mod_a-123-0");
+
+    std::filesystem::remove_all(dir);
+}
+
+// The POSIX crash handler writes a raw loom-crash-<pid>.txt fallback AND a
+// best-effort structured loom-crash-<pid>.json. When both exist for the same
+// crash, the store must surface only the structured one.
+TEST(DiagFaultStore, JsonSupersedesRawTxtSibling) {
+    auto dir = std::filesystem::temp_directory_path() /
+               ("loom_faults_super_" +
+                std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    auto write = [&](const std::string& name, const std::string& content) {
+        std::ofstream f(dir / name, std::ios::binary | std::ios::trunc);
+        f << content;
+    };
+
+    // Crash A: both .txt and .json present -> json wins.
+    FaultReport a = sampleReport();
+    a.id = "loom-crash-111";
+    a.kind = FaultKind::Signal;
+    write("loom-crash-111.txt", "=== raw ===\n");
+    write("loom-crash-111.json", toJson(a));
+    // Crash B: only the raw .txt survived (structured pass failed) -> raw shown.
+    write("loom-crash-222.txt", "=== raw ===\n");
+
+    FaultStore store(dir);
+    auto list = store.list();
+    ASSERT_EQ(list.size(), 2u);
+
+    auto byId = [&](const std::string& id) {
+        return std::find_if(list.begin(), list.end(),
+                            [&](const auto& s) { return s.id == id; });
+    };
+    auto a_it = byId("loom-crash-111");
+    auto b_it = byId("loom-crash-222");
+    ASSERT_NE(a_it, list.end());
+    ASSERT_NE(b_it, list.end());
+    EXPECT_EQ(a_it->kind, "signal");  // structured json, not the raw txt
+    EXPECT_EQ(b_it->kind, "raw");     // only the txt existed
 
     std::filesystem::remove_all(dir);
 }
