@@ -102,22 +102,63 @@ private:
     std::vector<CommandSubmission> pending_;
 };
 
+/// Polymorphic root for every function block, so a heterogeneous set can be
+/// ticked uniformly: std::vector<IFunctionBlock*> and call update() on each. The
+/// provider handle + inputs are bound by the concrete FB (typically at
+/// construction), so update() is arg-less. Common outputs (busy/error/error_id)
+/// live here so they're readable through the base without a downcast.
+///
+/// ABI note: keep this vtable minimal. It is intended for INTRA-module use — do
+/// not pass these pointers across .so boundaries (hidden visibility + header-only
+/// vtables make cross-boundary RTTI/dynamic_cast unsafe).
+class IFunctionBlock {
+public:
+    bool     busy     = false;
+    bool     error    = false;
+    uint32_t error_id = 0;
+
+    virtual ~IFunctionBlock() = default;
+
+    /// Evaluate one cycle.
+    virtual void update() = 0;
+
+    /// Full reset: clear outputs + any internal edge/latch state so the FB can be
+    /// reused from scratch. Base clears the common outputs; subclasses extend.
+    virtual void clear() { busy = false; error = false; error_id = 0; }
+
+    /// Re-arm verbs (no-ops on level FBs):
+    ///  rearm()     — drop edge memory so a still-asserted `execute` re-fires.
+    ///  resetEdge() — drop the `execute` pulse so re-firing needs a fresh edge.
+    virtual void rearm()     {}
+    virtual void resetEdge() {}
+};
+
 /// Reusable edge-triggered function-block base for PLCopen-style commands. A
 /// domain FB sets `execute`, on a rising edge builds its params + submits via a
 /// CommandClient (see command_client.h), and passes the result to commit();
 /// outputs then mirror the status cell. Depends only on CommandStatus — no
 /// module handle, no serialization — so it stays in this glaze-free header.
-class CommandFb {
+class CommandFb : public IFunctionBlock {
 public:
     bool       execute     = false;
     BufferMode buffer_mode = BufferMode::Aborting;
 
-    bool     busy            = false;
-    bool     active          = false;
-    bool     done            = false;
-    bool     command_aborted = false;
-    bool     error           = false;
-    uint32_t error_id        = 0;
+    // busy / error / error_id are inherited from IFunctionBlock.
+    bool active          = false;
+    bool done            = false;
+    bool command_aborted = false;
+
+    /// clear()     — full reset (outputs + edge memory + execute) → reuse.
+    /// rearm()     — drop edge memory only; a held `execute` re-fires next update.
+    /// resetEdge() — drop the `execute` pulse; re-fire needs a fresh rising edge
+    ///               (a cycle with execute low). The "set true / auto-clear" idiom.
+    void clear() override {
+        clearOutputs(); status_.reset(); state_ = State::Idle;
+        prev_execute_ = false; execute = false;
+    }
+    void rearm()     override { prev_execute_ = false; }
+    void resetEdge() override { execute = false; }
+    bool finished() const { return done || command_aborted || error; }
 
 protected:
     /// True on the Execute rising edge (valid before commit() updates state).
@@ -177,6 +218,29 @@ private:
     std::shared_ptr<CommandStatus> status_;
     bool  prev_execute_ = false;
     State state_        = State::Idle;
+};
+
+/// Level-triggered ("Enable") function-block base — the PLCopen counterpart to
+/// CommandFb for administrative / read blocks (MC_Power, MC_ReadParameter,
+/// MC_ReadActualPosition, ...). `enable` is a level input; while it is high the
+/// FB refreshes its outputs each update(). busy/error/error_id are shared with
+/// the base; subclasses add their own outputs (e.g. `status`, or `valid`+`value`).
+/// The re-arm verbs are no-ops here — a level input has no edge to consume.
+class EnableFb : public IFunctionBlock {
+public:
+    bool enable = false;
+
+    void clear() override {
+        busy = false; error = false; error_id = 0; prev_enable_ = false;
+    }
+
+protected:
+    bool enableRising()  const { return enable && !prev_enable_; }
+    bool enableFalling() const { return !enable && prev_enable_; }
+    void noteEnable()          { prev_enable_ = enable; }
+
+private:
+    bool prev_enable_ = false;
 };
 
 } // namespace loom

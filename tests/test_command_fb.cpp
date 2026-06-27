@@ -26,6 +26,7 @@ struct PokeFb : CommandFb {
         const bool r = rising();
         commit(r, r ? next : nullptr);
     }
+    void update() override { tick(); }     // satisfy IFunctionBlock
 };
 
 /// Count of the mutually-exclusive busy/terminal outputs (active is separate).
@@ -146,6 +147,7 @@ TEST(CommandRoundTrip, ProviderCompletesThroughChannel) {
             }
             commit(r, s);
         }
+        void update() override { tick(); }   // satisfy IFunctionBlock
     };
     ChFb fb; fb.ch = &ch;
 
