@@ -176,14 +176,30 @@ add_subdirectory(<module_name>)
 - Fault flags and status
 
 ## Key Rules
-1. **Aggregate structs only** — No constructors, no private members, no virtual methods in data structs
+1. **Aggregate data structs** — Config/Recipe/Runtime themselves must be aggregates (no constructors, private members, or virtual methods *at the top level*). They MAY contain non-aggregate members — function blocks, `loom::Sequence`, any class with glaze metadata — as long as each such member is reflectable (see [Reflection & Debuggability](#reflection--debuggability-expose-everything-by-design)). Default *member* initializers are fine, and are required for members with no default constructor.
 2. **Default initializers** — Always provide sensible defaults
-3. **No raw pointers** in data structs — use `std::string`, `std::vector`, `std::optional`
+3. **No raw pointers** in data structs — use `std::string`, `std::vector`, `std::optional`. A reflectable member may *internally* hold handles/pointers (a `CommandClient`, a status `shared_ptr`); that's fine as long as its metadata omits them.
 4. **Keep cyclic() fast** — No blocking I/O, no allocations, no exceptions
 5. **Use longRunning() for async work** — File I/O, network, heavy computation
 6. **Unique module names** — The `name` field in `moduleHeader()` must be unique across all modules
 7. **Prefer typed bus helpers** — `publishLocal()`, `subscribeTo()`, `registerLocalService()`, and typed `callService()` automatically serialize and deserialize aggregate payloads via glaze
 8. **Namespace Bus addresses** — Use `publishLocal()`, `registerLocalService()` etc. which auto-prefix with the module instance ID. Use `bus_->publish()`/`bus_->subscribe()` for global topics.
+
+## Reflection & Debuggability (expose everything by design)
+
+Every Config/Recipe/Runtime field is reflected, and the IDE lets a developer **read and write** all of them. This is intentional — reflection is for **debuggability**, not just the HMI (the HMI comes for free on top). A developer can set a function block's `execute`, flip an `enable`, or nudge a setpoint live to drive/step a module while developing. **Expose everything; don't hide internal state to "protect" it** — the open surface is the point.
+
+So **put framework objects directly in the Runtime** instead of hand-mirroring their state — e.g. a `loom::Sequence<Step>` and the PLCopen `MC_*` function blocks dropped straight into the Runtime struct reflect their own live I/O (step/elapsed, execute/busy/done/error), with no mirror fields.
+
+**Make a custom type reflectable** — it needs glaze metadata, one of:
+- **External** `glz::meta<T>` in a separate `*_glaze.h` (keeps the core control header glaze-free — `command.h` itself stays glaze-free; the opt-in metadata lives in `<loom/command_glaze.h>`). Function blocks reuse the base field-list macros — `LOOM_COMMAND_FB_FIELDS(T)` / `LOOM_ENABLE_FB_FIELDS(T)` / `LOOM_IFUNCTION_BLOCK_FIELDS(T)` — then add their own fields.
+- **In-class** `struct glaze { static constexpr auto value = glz::object(...); };` for types you own (it can reach **private** members). Declare it **after** the data members — a static-member initializer isn't a complete-class context, so earlier-declared members aren't visible yet.
+
+**Gotchas (these bit us — do not repeat):**
+- **Reflect only real, assignable data members.** Do *not* use value-returning getter lambdas or member-function pointers in meta: member-function pointers **silently serialize nothing**, and a value-returning getter makes `glz::read<Runtime>` **fail to compile** — and the SDK deserializes the *whole* Runtime, so one bad field breaks the entire module's build. To expose a private/computed value, use an in-class `struct glaze` with **data-member pointers**.
+- **Enums serialize as integers** unless you provide `glz::meta<E>` with `glz::enumerate("name", E::Value, ...)` for readable names.
+- **`glz::merge` is not for base-class reuse** — it tries to serialize the member pointers themselves. Use the field-list macros instead.
+- **Internal handles are simply omitted** from the metadata — list only the fields worth seeing.
 
 ## Inter-Module Communication
 
