@@ -289,6 +289,27 @@ bool Scheduler::start(LoadedModule& mod, const TaskConfig& config, const InitCon
                         recordModuleFault(*statePtr, mod, f.phase, f.message);
                     });
                 if (!ok) break;  // stop the loop rather than spin-faulting
+
+                // If longRunning() wasn't overridden, the base implementation
+                // flags opt-out: there's no background work, so retire the
+                // thread instead of spinning a core on a no-op.
+                if (mod.instance->longRunningOptedOut()) {
+                    spdlog::debug("Module '{}' has no long-running work; thread exiting", mod.id);
+                    break;
+                }
+
+                // Sleep between iterations so background work can't peg a core.
+                // Re-read the interval every pass so the module can change its
+                // cadence at runtime (e.g. back off when idle, speed up when
+                // busy). Chunk the wait so stop() stays responsive even when the
+                // interval is long.
+                auto remaining = mod.instance->longRunningInterval();
+                constexpr auto kSlice = std::chrono::milliseconds{100};
+                while (statePtr->running.load() && remaining > std::chrono::milliseconds::zero()) {
+                    const auto chunk = std::min(remaining, kSlice);
+                    std::this_thread::sleep_for(chunk);
+                    remaining -= chunk;
+                }
             }
             spdlog::info("Long-running task ended for '{}'", mod.id);
         });

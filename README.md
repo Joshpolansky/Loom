@@ -137,7 +137,11 @@ public:
     }
 
     void exit() override {}
-    void longRunning() override {}  // required; leave empty if unused
+
+    // longRunning() is optional — override it only for background work
+    // (e.g. polling a slow device). Omit it and the runtime starts no
+    // background thread for this module.
+    // void longRunning() override { ... }
 };
 
 LOOM_REGISTER_MODULE(MyModule)
