@@ -44,7 +44,10 @@ std::filesystem::path resolveModulePath(const RuntimeConfig& config,
 RuntimeCore::RuntimeCore(const RuntimeConfig& config)
     : config_(config), dataStore_(config.dataDir),
       watcher_(config.moduleDir),
-      faultStore_(config.dataDir / "crash") {
+      faultStore_(config.dataDir / "crash"),
+      systemMetrics_(diag::SystemMetrics::Config{ .logEnabled = config.logSystemMetrics }) {
+    // Begin sampling process memory/CPU; served on /api/system + the WS frame.
+    systemMetrics_.start();
     // Load scheduler.json from the data directory.
     auto schedPath = config.dataDir / "scheduler.json";
     bool schedExisted = std::filesystem::exists(schedPath);

@@ -42,7 +42,14 @@ add_library(loom_runtime STATIC
     src/diag/fault_report.cpp
     src/diag/fault_store.cpp
     src/diag/runtime_fault_sink.cpp
+    src/diag/system_metrics.cpp
 )
+
+# Process memory metrics need psapi (GetProcessMemoryInfo) on Windows; macOS uses
+# the Mach task API (in the system libs) and Linux reads /proc — no extra links.
+if(WIN32)
+    target_link_libraries(loom_runtime PRIVATE psapi)
+endif()
 
 target_include_directories(loom_runtime PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

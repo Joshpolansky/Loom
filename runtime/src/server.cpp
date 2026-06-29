@@ -416,6 +416,35 @@ void Server::start() {
         });
 
         // =====================================================================
+        // GET /api/system — Process resource metrics (memory + CPU) + history.
+        // =====================================================================
+        CROW_ROUTE(app, "/api/system")
+        ([this]() {
+            const auto cur  = core_.systemMetrics().current();
+            const auto hist = core_.systemMetrics().history();
+            std::string json = "{";
+            json += "\"ts\":" + std::to_string(cur.tsMs);
+            json += ",\"rssBytes\":" + std::to_string(cur.rssBytes);
+            json += ",\"peakRssBytes\":" + std::to_string(cur.peakRssBytes);
+            json += ",\"cpuPercent\":" + std::to_string(cur.cpuPercent);
+            json += ",\"uptimeSec\":" + std::to_string(cur.uptimeSec);
+            json += ",\"history\":[";
+            bool first = true;
+            for (const auto& s : hist) {
+                if (!first) json += ",";
+                first = false;
+                json += "{\"ts\":" + std::to_string(s.tsMs) +
+                        ",\"rssBytes\":" + std::to_string(s.rssBytes) +
+                        ",\"cpuPercent\":" + std::to_string(s.cpuPercent) + "}";
+            }
+            json += "]}";
+            auto resp = crow::response(200, json);
+            resp.add_header("Content-Type", "application/json");
+            resp.add_header("Access-Control-Allow-Origin", "*");
+            return resp;
+        });
+
+        // =====================================================================
         // POST /api/modules/instantiate — Create a new instance from a .so
         // Body: { "id": "left_motor", "so": "libexample_motor.so" }
         // =====================================================================
@@ -1558,6 +1587,7 @@ void Server::start() {
                 std::unordered_map<std::string, std::string> moduleFragments;
                 std::unordered_map<std::string, std::string> runtimeFragments;
                 std::string classesTail;
+                std::string systemTail;
                 {
                     std::shared_lock<std::shared_mutex> lock(core_.moduleMutex());
 
@@ -1602,7 +1632,17 @@ void Server::start() {
                         classesTail += "}";
                         firstClass = false;
                     }
-                    classesTail += "}}";
+                    classesTail += "}";  // close "classes" only; root closed after the system block
+
+                    // Process resource metrics (memory + CPU). Same for every
+                    // connection, so build once here; closes the root object.
+                    const auto sys = core_.systemMetrics().current();
+                    systemTail = ",\"system\":{";
+                    systemTail += "\"rssBytes\":" + std::to_string(sys.rssBytes);
+                    systemTail += ",\"peakRssBytes\":" + std::to_string(sys.peakRssBytes);
+                    systemTail += ",\"cpuPercent\":" + std::to_string(sys.cpuPercent);
+                    systemTail += ",\"uptimeSec\":" + std::to_string(sys.uptimeSec);
+                    systemTail += "}}";
                 }
 
                 // One send_binary per connection — runtime data embedded inline for
@@ -1631,6 +1671,7 @@ void Server::start() {
                         first = false;
                     }
                     msg += classesTail;
+                    msg += systemTail;
                     conn->send_binary(msg);
                 }
             }
