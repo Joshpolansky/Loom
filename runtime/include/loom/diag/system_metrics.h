@@ -40,7 +40,10 @@ public:
         int  historyMax = 600;    ///< samples retained for charting (~10 min @ 1s)
     };
 
-    explicit SystemMetrics(Config cfg = {});
+    // NB: no `= {}` default — a defaulted Config argument would force the
+    // nested struct's default member initializers within the enclosing class
+    // definition, which GCC/Clang reject (MSVC allows it). Callers pass a Config.
+    explicit SystemMetrics(Config cfg);
     ~SystemMetrics();
 
     SystemMetrics(const SystemMetrics&) = delete;
