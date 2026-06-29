@@ -42,7 +42,6 @@ public:
     }
 
     void exit() override {}
-    void longRunning() override {}
 private:
     static bool tryReadNumeric(void* p, const std::string& type_name, double &out) {
         if (!p) return false;

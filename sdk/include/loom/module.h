@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <mutex>
 #include <shared_mutex>
 #include <loom/bus.h>
@@ -61,7 +62,31 @@ public:
     virtual void postCyclic() {}
 
     virtual void exit() = 0;
-    virtual void longRunning() = 0;
+
+    /// Optional background work, run repeatedly on a dedicated per-module thread
+    /// (independent of the cyclic schedule) — e.g. polling a slow device or
+    /// flushing logs. The runtime sleeps longRunningInterval() between calls.
+    ///
+    /// If you do NOT override this, the base implementation flags the module as
+    /// having no background work and the scheduler retires the thread after the
+    /// first call — so an unused longRunning() never spins a core.
+    virtual void longRunning() { longRunningOptedOut_ = true; }
+
+    /// Cadence the runtime waits between longRunning() calls (default 100 ms).
+    /// Polled after every longRunning() call, so a module can change it at
+    /// runtime — e.g. return a member that longRunning() updates to back off
+    /// when idle or speed up when busy. If that member is also written from
+    /// another thread (cyclic(), a service handler), make it atomic. Also bounds
+    /// how long stop() waits for the thread. Ignored when longRunning() isn't
+    /// overridden.
+    virtual std::chrono::milliseconds longRunningInterval() const {
+        return std::chrono::milliseconds{100};
+    }
+
+    /// True once the default (non-overridden) longRunning() has run — i.e. the
+    /// module has no background work. Read by the scheduler to retire the
+    /// long-running thread; not intended for module-author use.
+    bool longRunningOptedOut() const { return longRunningOptedOut_; }
 
     /// Called by the scheduler instead of init() directly. The Module<> base
     /// opens the extension-registration window around the user's init() so that
@@ -207,6 +232,10 @@ protected:
     std::vector<std::string> providedPorts_;
     std::vector<uint64_t> subscriptionIds_;
     std::string moduleId_;
+
+    /// Set by the base longRunning() when it isn't overridden — signals the
+    /// scheduler that this module has no background work. See longRunning().
+    bool longRunningOptedOut_ = false;
 };
 
 /// Base class for user modules. Users inherit from this with their own

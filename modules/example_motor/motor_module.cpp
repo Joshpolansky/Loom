@@ -91,10 +91,6 @@ public:
         runtime_.current_speed = 0.0;
     }
 
-    void longRunning() override {
-        // No long-running work for this example module
-    }
-
 private:
     MotorExt ext_;  // registered extension target (mutated only in cyclic())
 };

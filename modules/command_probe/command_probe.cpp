@@ -45,7 +45,6 @@ public:
     }
 
     void exit() override {}
-    void longRunning() override {}
 
 private:
     loom::CommandChannel                 channel_;

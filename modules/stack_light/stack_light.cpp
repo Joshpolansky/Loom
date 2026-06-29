@@ -51,7 +51,6 @@ public:
         runtime_.cmd = StackLightCmd{};
     }
 
-    void longRunning() override {}
 
 private:
     static bool resolveLight(int state, bool blinkOn) {

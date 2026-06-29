@@ -47,7 +47,6 @@ public:
             doFault(config_.fault);
     }
     void exit() override {}
-    void longRunning() override {}
 };
 
 LOOM_REGISTER_MODULE(Crasher)

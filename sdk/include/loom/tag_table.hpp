@@ -183,7 +183,14 @@ void tag_visit_field(FieldType& field,
         if (field.has_value()) {
             tag_visit_field(*field, path, cache, stale_checkers, true);  // mark descendants as dynamic
         }
-    } else if constexpr (glz::reflectable<FieldType> && !is_string_like<FieldType>::value) {
+    } else if constexpr ((glz::reflectable<FieldType> || glz::glaze_object_t<FieldType>)
+                         && !is_string_like<FieldType>::value) {
+        // Recurse into nested structs. The guard mirrors glz::for_each_field's
+        // two overloads exactly — reflectable (plain aggregates) OR glaze_object_t
+        // (types with a glz::meta specialization, e.g. function blocks and other
+        // class-based data types). Without the glaze_object_t arm, meta types fall
+        // through to the leaf branch below and their sub-fields are never indexed,
+        // so the OPC UA facade / watch tree can't see them.
         Tag struct_tag;
         struct_tag.path      = path;
         struct_tag.type_name = glz::name_v<FieldType>;
