@@ -139,6 +139,14 @@ static void applyAffinityPolicy(int cpuCore) {
         spdlog::debug("Linux affinity set to core {}", cpuCore);
     }
 }
+
+#else  // platforms without thread RT/affinity control (e.g. Emscripten/WASM)
+
+// applyAffinityPolicy is called unconditionally below (the realtime-policy calls
+// are #if-guarded, but the affinity call is not), so it needs a definition on
+// every platform. No-op where OS thread affinity isn't available.
+static void applyAffinityPolicy(int /*cpuCore*/) {}
+
 #endif // platform
 
 // ---- Scheduler implementation ---------------------------------------------------
