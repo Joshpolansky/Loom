@@ -19,11 +19,16 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 # ---------------------------------------------------------------------------
-# Static library — all runtime logic, exported for consumers to link against.
-# Consumers add a thin main.cpp that calls loom::run(argc, argv).
+# loom_core — portable engine. No networking, signals, or process lifecycle:
+# the scheduler, data engine/store, module loader, IO mapper, oscilloscope and
+# the portable diagnostics. Depends only on the SDK, spdlog, glaze (via the SDK)
+# and dlopen. This is the layer every host links against — the native host
+# below, and (out of tree, on branch wasm-spike) an Emscripten/WASM host.
+#
+# NB: keep this list free of any TU that needs sockets (Crow), signals, or
+# in-process stack symbolization (cpptrace) — those belong in loom_runtime.
 # ---------------------------------------------------------------------------
-add_library(loom_runtime STATIC
-    src/run.cpp
+add_library(loom_core STATIC
     src/runtime_core.cpp
     src/runtime_heap.cpp
     src/module_loader.cpp
@@ -32,31 +37,49 @@ add_library(loom_runtime STATIC
     src/data_engine.cpp
     src/data_store.cpp
     src/io_mapper.cpp
-    src/server.cpp
-    src/opcua_rest_server.cpp
     src/oscilloscope.cpp
     src/module_watcher.cpp
     src/diag/breadcrumb.cpp
-    src/diag/crash_handler.cpp
-    src/diag/symbolizer.cpp
     src/diag/fault_report.cpp
     src/diag/fault_store.cpp
     src/diag/runtime_fault_sink.cpp
 )
 
-target_include_directories(loom_runtime PUBLIC
+target_include_directories(loom_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
+)
+
+# Build type stamped into crash reports (works for single- and multi-config).
+target_compile_definitions(loom_core PRIVATE LOOM_BUILD_TYPE="$<CONFIG>")
+
+target_link_libraries(loom_core PUBLIC
+    loom::sdk
+    spdlog::spdlog
+    ${CMAKE_DL_LIBS}
+)
+
+# ---------------------------------------------------------------------------
+# loom_runtime — native host layer over loom_core: the HTTP/WebSocket and
+# OPC-UA servers, process lifecycle / signal handling, and in-process crash
+# capture. It aggregates loom_core (PUBLIC), so the installed and conan-consumed
+# `loom_runtime` target keeps providing the full runtime exactly as before.
+# Consumers still add a thin main.cpp that calls loom::run(argc, argv).
+# ---------------------------------------------------------------------------
+add_library(loom_runtime STATIC
+    src/run.cpp
+    src/server.cpp
+    src/opcua_rest_server.cpp
+    src/diag/crash_handler.cpp
+    src/diag/symbolizer.cpp
 )
 
 # Build type stamped into crash reports (works for single- and multi-config).
 target_compile_definitions(loom_runtime PRIVATE LOOM_BUILD_TYPE="$<CONFIG>")
 
 target_link_libraries(loom_runtime PUBLIC
-    loom::sdk
-    spdlog::spdlog
+    loom_core
     Crow::Crow
-    ${CMAKE_DL_LIBS}
 )
 
 # Symbolization for crash reports. PRIVATE: confined to the diag symbolizer TU,
@@ -105,7 +128,7 @@ endif()
 # ---------------------------------------------------------------------------
 include(GNUInstallDirs)
 
-install(TARGETS loom_runtime
+install(TARGETS loom_runtime loom_core
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 

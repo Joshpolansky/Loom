@@ -149,6 +149,18 @@ public:
     /// Idempotent: already-running classes are skipped.
     void startClasses();
 
+    /// Run one cooperative scheduling pass: every class whose period has elapsed
+    /// (tracked against a steady clock, independently per class — see
+    /// ClassRunnerState::coopNextDue) gets one sweep of its members (preCyclic →
+    /// cyclic → I/O map → postCyclic), in place on the calling thread. No class
+    /// threads spawned, no sleeping, no RT thread policy. For single-threaded
+    /// hosts (e.g. the WASM build) that drive the runtime from an external loop
+    /// instead of startClasses(). Periods ARE enforced (a "fast" class still runs
+    /// more often than a "slow" one, capped by call frequency); priority/affinity
+    /// are NOT — they require an OS thread, which cooperative mode doesn't have.
+    /// Do NOT mix with startClasses() on the same instance.
+    void tickOnce();
+
     /// Configure optional targets for cycle-aligned sampling.
     /// Pass pointers to the `Oscilloscope`, `DataEngine`, `ModuleLoader`, and
     /// the runtime `moduleMutex` so the scheduler can enqueue snapshots after
@@ -246,6 +258,13 @@ private:
         std::atomic<int>      liveCpuAffinity{-1};
         std::atomic<uint64_t> cfgEpoch{0};
 
+        // Cooperative (tickOnce) scheduling only: the next steady-clock deadline
+        // at which this class is due to run. Default (epoch 0) = "not yet
+        // anchored"; tickOnce anchors it on first sight and advances it by the
+        // live period each run, so classes keep independent rates without
+        // threads. Unused by the threaded classLoop path.
+        std::chrono::steady_clock::time_point coopNextDue{};
+
         /// Publish def's tunables to the live atomics and bump the epoch. Call
         /// after mutating def (under the scheduler mutex).
         void publishTunables() {
@@ -288,6 +307,11 @@ private:
 
     void classLoop(ClassRunnerState& runner);
     void isolatedLoop(LoadedModule& mod, TaskConfig config, TaskState& state);
+
+    /// One sweep over a class's members (preCyclic → cyclic → I/O → postCyclic)
+    /// with per-member/class metrics. Shared by classLoop (native thread) and
+    /// tickOnce (cooperative driver); the caller owns timing/pacing.
+    void sweepClassOnce(ClassRunnerState& runner);
 
     /// Quarantine a module that threw from a guarded call and report the fault:
     /// set faulted + ModuleState::Error, stamp last-fault fields, log, and notify
