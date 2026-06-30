@@ -215,6 +215,48 @@ Response dispatch(RuntimeCore& core, const Request& req) {
         return json(200, glz::write_json(resp).value_or("[]"));
     }
 
+    // GET /api/faults — fault reports (newest first)
+    if (req.method == Method::GET && req.path == "/api/faults") {
+        std::string body = "[";
+        bool first = true;
+        for (const auto& s : core.faultStore().list()) {
+            if (!first) body += ",";
+            first = false;
+            body += "{\"id\":\"" + jsonEscapeString(s.id) + "\""
+                  + ",\"ts\":" + std::to_string(s.tsMs)
+                  + ",\"kind\":\"" + jsonEscapeString(s.kind) + "\""
+                  + ",\"module\":\"" + jsonEscapeString(s.moduleId) + "\""
+                  + ",\"class\":\"" + jsonEscapeString(s.className) + "\""
+                  + ",\"phase\":\"" + jsonEscapeString(s.phase) + "\""
+                  + ",\"reason\":\"" + jsonEscapeString(s.reason) + "\"}";
+        }
+        body += "]";
+        return json(200, std::move(body));
+    }
+
+    // GET /api/bus/topics
+    if (req.method == Method::GET && req.path == "/api/bus/topics") {
+        auto topics = core.bus().topics();
+        std::string body = "[";
+        for (std::size_t i = 0; i < topics.size(); ++i) { if (i) body += ","; body += "\"" + topics[i] + "\""; }
+        body += "]";
+        return json(200, std::move(body));
+    }
+
+    // GET /api/bus/services
+    if (req.method == Method::GET && req.path == "/api/bus/services") {
+        auto infos = core.bus().serviceInfos();
+        std::string body = "[";
+        for (std::size_t i = 0; i < infos.size(); ++i) {
+            if (i) body += ",";
+            body += "{\"name\":\"" + infos[i].name + "\",\"schema\":";
+            body += infos[i].schema.empty() ? "null" : infos[i].schema;
+            body += "}";
+        }
+        body += "]";
+        return json(200, std::move(body));
+    }
+
     return notFound();
 }
 

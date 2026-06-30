@@ -1,5 +1,6 @@
 #include "loom/server.h"
 #include "loom/api/json_build.h"   // shared jsonEscapeString / serializeCycleHistory / moduleInfoJson
+#include "loom/api/router.h"       // api::dispatch — shared /api/* routing
 #include "loom/diag/breadcrumb.h"
 #include "loom/diag/fault_store.h"
 
@@ -216,6 +217,17 @@ Server::~Server() {
     stop();
 }
 
+static api::Method crowMethodToApi(crow::HTTPMethod m) {
+    switch (m) {
+        case crow::HTTPMethod::Get:    return api::Method::GET;
+        case crow::HTTPMethod::Post:   return api::Method::POST;
+        case crow::HTTPMethod::Put:    return api::Method::PUT;
+        case crow::HTTPMethod::Patch:  return api::Method::PATCH;
+        case crow::HTTPMethod::Delete: return api::Method::DELETE;
+        default:                       return api::Method::UNKNOWN;
+    }
+}
+
 void Server::start() {
     if (running_.load()) return;
     running_.store(true);
@@ -285,29 +297,7 @@ void Server::start() {
         // run's exception faults and any persisted reports from prior runs
         // (signal-path crashes the process couldn't keep in memory).
         // =====================================================================
-        CROW_ROUTE(app, "/api/faults")
-        ([this]() {
-            std::string json = "[";
-            bool first = true;
-            for (const auto& s : core_.faultStore().list()) {
-                if (!first) json += ",";
-                first = false;
-                json += "{";
-                json += "\"id\":\"" + jsonEscapeString(s.id) + "\"";
-                json += ",\"ts\":" + std::to_string(s.tsMs);
-                json += ",\"kind\":\"" + jsonEscapeString(s.kind) + "\"";
-                json += ",\"module\":\"" + jsonEscapeString(s.moduleId) + "\"";
-                json += ",\"class\":\"" + jsonEscapeString(s.className) + "\"";
-                json += ",\"phase\":\"" + jsonEscapeString(s.phase) + "\"";
-                json += ",\"reason\":\"" + jsonEscapeString(s.reason) + "\"";
-                json += "}";
-            }
-            json += "]";
-            auto resp = crow::response(200, json);
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
+        // GET /api/faults — migrated to api::dispatch (router.cpp); served by the catch-all above.
 
         // =====================================================================
         // GET /api/faults/<id> — Full structured report for one fault.
@@ -1256,40 +1246,12 @@ void Server::start() {
         // =====================================================================
         // GET /api/bus/topics — List bus topics
         // =====================================================================
-        CROW_ROUTE(app, "/api/bus/topics")
-        ([this]() {
-            auto topics = core_.bus().topics();
-            std::string json = "[";
-            for (size_t i = 0; i < topics.size(); ++i) {
-                if (i > 0) json += ",";
-                json += "\"" + topics[i] + "\"";
-            }
-            json += "]";
-            auto resp = crow::response(200, json);
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
+        // GET /api/bus/topics — migrated to api::dispatch (router.cpp).
 
         // =====================================================================
         // GET /api/bus/services — List bus services with request schemas
         // =====================================================================
-        CROW_ROUTE(app, "/api/bus/services")
-        ([this]() {
-            auto infos = core_.bus().serviceInfos();
-            std::string json = "[";
-            for (size_t i = 0; i < infos.size(); ++i) {
-                if (i > 0) json += ",";
-                json += "{\"name\":\"" + infos[i].name + "\",\"schema\":";
-                json += infos[i].schema.empty() ? "null" : infos[i].schema;
-                json += "}";
-            }
-            json += "]";
-            auto resp = crow::response(200, json);
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
+        // GET /api/bus/services — migrated to api::dispatch (router.cpp).
 
         // =====================================================================
         // POST /api/bus/services/:name — Call a bus service
@@ -1727,6 +1689,24 @@ void Server::start() {
                 res = serveIndex();
                 res.end();
             }
+        });
+
+        // ---- /api/* catch-all → shared dispatch (registered LAST so the static
+        // routes above take priority; this only handles paths none of them match,
+        // i.e. routes already migrated into api::dispatch and shared with WASM).
+        CROW_ROUTE(app, "/api/<path>").methods(
+            crow::HTTPMethod::Get, crow::HTTPMethod::Post, crow::HTTPMethod::Put,
+            crow::HTTPMethod::Patch, crow::HTTPMethod::Delete)
+        ([this](const crow::request& creq, const std::string&) {
+            api::Request areq;
+            areq.method = crowMethodToApi(creq.method);
+            areq.path   = creq.url;
+            areq.body   = creq.body;
+            api::Response ares = api::dispatch(core_, areq);
+            crow::response resp(ares.status, ares.body);
+            resp.add_header("Content-Type", ares.contentType);
+            resp.add_header("Access-Control-Allow-Origin", "*");
+            return resp;
         });
 
         spdlog::info("Starting HTTP server on {}:{}", config_.bindAddress, config_.port);
