@@ -5,6 +5,8 @@
 #include "loom/opcua_rest_nodeid.h"  // opcrest::sectionFromName
 #include "loom/diag/breadcrumb.h"   // diag::phaseName
 
+#include <glaze/glaze.hpp>
+
 #include <deque>
 #include <shared_mutex>
 #include <string>
@@ -122,6 +124,43 @@ Method methodFromString(std::string_view s) {
     return Method::UNKNOWN;
 }
 
+// Scheduler DTOs (glaze auto-reflects these aggregates). In a NAMED namespace
+// because glaze reflection requires the reflected type to have linkage. NOTE:
+// duplicated with server.cpp for now — the right consolidation is to make
+// server.cpp delegate wholesale to dispatch() and host the one copy here.
+struct ClassStatsDto {
+    int64_t  lastJitterUs    = 0;
+    int64_t  lastCycleTimeUs = 0;
+    int64_t  maxCycleTimeUs  = 0;
+    uint64_t tickCount       = 0;
+    int      memberCount     = 0;
+    int64_t  lastTickStartMs = 0;
+};
+struct ClassInfoDto {
+    std::string              name;
+    int                      period_us    = 10000;
+    int                      cpu_affinity = -1;
+    int                      priority     = 50;
+    int                      spin_us      = 0;
+    ClassStatsDto            stats;
+    std::vector<std::string> modules;
+};
+ClassInfoDto makeClassInfoDto(const ClassDef& def, const std::vector<ClassStats>& allStats) {
+    ClassInfoDto dto;
+    dto.name         = def.name;
+    dto.period_us    = def.period_us;
+    dto.cpu_affinity = def.cpu_affinity;
+    dto.priority     = def.priority;
+    dto.spin_us      = def.spin_us;
+    for (const auto& s : allStats) {
+        if (s.name != def.name) continue;
+        dto.stats   = { s.lastJitterUs, s.lastCycleTimeUs, s.maxCycleTimeUs, s.tickCount, s.memberCount };
+        dto.modules = s.moduleIds;
+        break;
+    }
+    return dto;
+}
+
 namespace {
 Response json(int status, std::string body) { return {status, "application/json", std::move(body)}; }
 Response notFound() { return json(404, "{\"error\":\"no matching route\"}"); }
@@ -164,6 +203,16 @@ Response dispatch(RuntimeCore& core, const Request& req) {
                 }
             }
         }
+    }
+
+    // GET /api/scheduler/classes — class definitions + live stats
+    if (req.method == Method::GET && req.path == "/api/scheduler/classes") {
+        auto allStats = core.scheduler().allClassStats();
+        auto defs     = core.scheduler().classConfigs();
+        std::vector<ClassInfoDto> resp;
+        resp.reserve(defs.size());
+        for (const auto& def : defs) resp.push_back(makeClassInfoDto(def, allStats));
+        return json(200, glz::write_json(resp).value_or("[]"));
     }
 
     return notFound();
