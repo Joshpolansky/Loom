@@ -59,6 +59,27 @@ target_link_libraries(loom_core PUBLIC
     ${CMAKE_DL_LIBS}
 )
 
+if(EMSCRIPTEN)
+
+# ---------------------------------------------------------------------------
+# loom_host_wasm — WASM host: run_wasm.cpp + loom_core built as a MAIN_MODULE so
+# module plugins can be dlopen'd at runtime. No Crow / cpptrace / signals; driven
+# from JavaScript via Scheduler::tickOnce(). Emits loom_wasm.js + loom_wasm.wasm.
+# ---------------------------------------------------------------------------
+add_executable(loom_host_wasm src/run_wasm.cpp)
+target_compile_definitions(loom_host_wasm PRIVATE LOOM_BUILD_TYPE="$<CONFIG>")
+target_link_libraries(loom_host_wasm PRIVATE loom_core)
+set_target_properties(loom_host_wasm PROPERTIES OUTPUT_NAME loom_wasm SUFFIX ".js")
+target_link_options(loom_host_wasm PRIVATE
+    "-sMAIN_MODULE=1"
+    "-sALLOW_MEMORY_GROWTH=1"
+    "-sMODULARIZE=1"
+    "-sEXPORT_NAME=createLoomModule"
+    "-sENVIRONMENT=web,worker,node"
+    "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS']")
+
+else() # ---- native host ----------------------------------------------------
+
 # ---------------------------------------------------------------------------
 # loom_runtime — native host layer over loom_core: the HTTP/WebSocket and
 # OPC-UA servers, process lifecycle / signal handling, and in-process crash
@@ -162,4 +183,6 @@ install(DIRECTORY "${CMAKE_SOURCE_DIR}/frontend/dist/"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/loom/ui
     OPTIONAL
 )
+
+endif() # EMSCRIPTEN / native host
 

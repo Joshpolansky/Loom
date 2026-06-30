@@ -25,6 +25,29 @@ build-release: setup-release
     cmake --preset conan-release
     cmake --build --preset conan-release
 
+# --- WebAssembly (Emscripten) -----------------------------------------------
+
+# Install the Emscripten SDK (deps/wasm/emsdk) as the toolchain, then have Conan
+# resolve the library deps for the Emscripten profile — the SAME glaze/spdlog
+# versions as the native build, so there's no drift. Generates the wasm CMake
+# toolchain under build/Wasm.
+setup-wasm:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -d deps/wasm/emsdk ]; then
+        git clone https://github.com/emscripten-core/emsdk.git deps/wasm/emsdk
+        ( cd deps/wasm/emsdk && ./emsdk install latest && ./emsdk activate latest )
+    fi
+    EMSDK="$PWD/deps/wasm/emsdk" conan install . \
+        -pr:h conan/profiles/emscripten -pr:b default \
+        -of build/Wasm --build=missing
+
+# Build the WASM runtime host → output/loom_wasm.{js,wasm}. Uses the Conan-
+# generated preset (build/Wasm), just as native uses conan-debug.
+build-wasm: setup-wasm
+    cmake --preset conan-release
+    cmake --build --preset conan-release
+
 # Run tests
 test: build
     ctest --preset conan-debug --output-on-failure

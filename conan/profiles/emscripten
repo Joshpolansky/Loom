@@ -1,0 +1,27 @@
+# Cross-build profile for the WebAssembly (Emscripten) runtime host.
+# Uses the Emscripten SDK pointed at by $EMSDK (e.g. deps/wasm/emsdk) for the
+# toolchain, while Conan resolves the (header-only) deps — same versions as the
+# native build, so there's no drift. Build/host deps that don't apply to wasm
+# (Crow, cpptrace, gtest) are dropped in conanfile.py via settings.os.
+#
+#   EMSDK=/path/to/emsdk conan install . -pr:h conan/profiles/emscripten \
+#       -pr:b default -of build/Wasm --build=missing
+
+[settings]
+os=Emscripten
+arch=wasm
+compiler=clang
+compiler.version=20
+compiler.cppstd=23
+compiler.libcxx=libc++
+build_type=Release
+
+[options]
+# Header-only spdlog: nothing to cross-compile, and matches how loom_core uses it.
+spdlog/*:header_only=True
+
+[conf]
+tools.cmake.cmaketoolchain:generator=Ninja
+# Chain Emscripten's CMake toolchain under Conan's generated one, so find_package
+# resolves the Conan deps AND the compiler is emcc.
+tools.cmake.cmaketoolchain:user_toolchain=["{{ os.getenv('EMSDK') }}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"]
