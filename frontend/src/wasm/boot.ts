@@ -22,9 +22,21 @@ function loadScript(src: string): Promise<void> {
   });
 }
 
-/** Modules to auto-load in wasm mode. For now the bundled demo; later, the
- *  application's own SIDE_MODULE .wasm files (built via loom_add_module). */
-const WASM_MODULES = ['demo_module.so'];
+/** Modules to auto-load in wasm mode — the bundled example modules, same set
+ *  native boots from a clean instances.json (modules/CMakeLists.txt's EMSCRIPTEN
+ *  list, kept in sync with this one). EtherCAT is the one exception: it needs a
+ *  real EtherCAT master (SOEM) + raw-Ethernet access, neither available in a
+ *  browser, so it's native-only and not built for wasm at all. */
+const WASM_MODULES = [
+  'class_based.so',
+  'command_probe.so',
+  'crasher.so',
+  'example_motor.so',
+  'oscilloscope.so',
+  'pneumatic_actuator.so',
+  'sequencer.so',
+  'stack_light.so',
+];
 
 export async function bootMachine(): Promise<unknown> {
   if (!isWasmMode()) {

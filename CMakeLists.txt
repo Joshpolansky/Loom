@@ -98,6 +98,12 @@ if(EMSCRIPTEN)
     add_compile_definitions(FMT_CONSTEVAL=)
     add_compile_options(-fexceptions)
     add_link_options(-fexceptions)
+
+    # CMake's Emscripten platform defaults TARGET_SUPPORTS_SHARED_LIBS to FALSE,
+    # so add_library(MODULE) (used by every bundled module — modules/*/CMakeLists.txt)
+    # silently downgrades to a STATIC archive instead of a dlopen-able wasm side
+    # module. Override it before modules/ is added.
+    set_property(GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS TRUE)
 else()
     find_package(GTest REQUIRED)
     find_package(Crow REQUIRED)
@@ -107,10 +113,11 @@ endif()
 add_subdirectory(sdk)
 add_subdirectory(runtime)
 
-# Bundled modules and tests are native-only for now (modules need a SIDE_MODULE
-# build path; tests need GTest). The WASM build produces just the runtime host.
+# Bundled modules build under both native and WASM (as SIDE_MODULEs — see
+# modules/CMakeLists.txt); EtherCAT is the one exception, gated out there.
+# Tests stay native-only (need GTest, which conanfile.py doesn't pull for wasm).
+add_subdirectory(modules)
 if(NOT EMSCRIPTEN)
-    add_subdirectory(modules)
     enable_testing()
     add_subdirectory(tests)
 endif()

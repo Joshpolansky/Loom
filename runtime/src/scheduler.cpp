@@ -722,6 +722,18 @@ void Scheduler::sortMembers(ClassRunnerState& runner) {
 }
 
 void Scheduler::pauseClass(ClassRunnerState& runner) {
+#ifdef __EMSCRIPTEN__
+    // No-op: wasm has no class thread (classLoop() is never spawned — see
+    // startClasses()/insertMember's #ifndef __EMSCRIPTEN__ guards), so there is
+    // nothing to pause and nothing that will ever ack. Waiting here deadlocks
+    // forever: insertMember() calls this for every module after the first one
+    // joining an already-"running" (per the flag, not actually threaded) class,
+    // and removeMember() calls it on reload/reassign — both went straight to
+    // pauseCv.wait() before this guard existed. The cooperative tick loop can't
+    // run concurrently with this synchronous call anyway (single JS thread), so
+    // the caller's subsequent runner.members mutation is already safe.
+    (void)runner;
+#else
     if (!runner.running.load()) return;
 
     {
@@ -735,14 +747,19 @@ void Scheduler::pauseClass(ClassRunnerState& runner) {
     runner.pauseCv.wait(lk, [&] {
         return runner.pauseAcked || !runner.running.load();
     });
+#endif
 }
 
 void Scheduler::unpauseClass(ClassRunnerState& runner) {
+#ifdef __EMSCRIPTEN__
+    (void)runner;  // no-op to match pauseClass(); see its comment.
+#else
     {
         std::lock_guard lk(runner.pauseMx);
         runner.pauseRequested = false;
     }
     runner.pauseCv.notify_all();
+#endif
 }
 
 // ---- Metrics buffering ----------------------------------------------------------
