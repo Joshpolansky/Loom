@@ -77,7 +77,10 @@ struct InstantiateRequest {
     std::string so;
 };
 
-/// Response item for GET /api/modules/available.
+/// Response item for GET /api/modules/available. NOTE: kept here (not migrated to
+/// the catch-all) because the specific GET /api/modules/<string> route would
+/// otherwise grab "/api/modules/available" as a module id. dispatch() has its own
+/// copy (ordered before <id>) that serves WASM.
 struct AvailableModuleDto {
     std::string filename;
     std::string className;
@@ -685,47 +688,12 @@ void Server::start() {
         // frontend walks this tree directly to present probeable fields, so we
         // never ship a flat `[{moduleId, path}, ...]` representation.
         // =====================================================================
-        CROW_ROUTE(app, "/api/scope/schema")
-        ([this]() {
-            std::shared_lock<std::shared_mutex> lock(core_.moduleMutex());
-            std::string json = "{";
-            bool first = true;
-            for (const auto& [id, _] : core_.loader().modules()) {
-                auto runtime = core_.dataEngine().readSection(id, DataSection::Runtime);
-                if (runtime.empty()) runtime = "{}";
-                if (!first) json += ",";
-                json += "\"" + id + "\":" + runtime;
-                first = false;
-            }
-            json += "}";
-            auto resp = crow::response(200, json);
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
+        // GET /api/scope/schema — migrated to api::dispatch (router.cpp).
 
         // =====================================================================
         // GET /api/scope/probes — List active probes
         // =====================================================================
-        CROW_ROUTE(app, "/api/scope/probes")
-        ([this]() {
-            auto probes = core_.oscilloscope().listProbes();
-            std::string json = "[";
-            bool first = true;
-            for (auto& p : probes) {
-                if (!first) json += ",";
-                json += "{\"id\":" + std::to_string(p.id)
-                        + ",\"moduleId\":\"" + p.moduleId + "\""
-                        + ",\"path\":\"" + p.path + "\""
-                        + ",\"label\":\"" + p.label + "\"}";
-                first = false;
-            }
-            json += "]";
-            auto resp = crow::response(200, json);
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
+        // GET /api/scope/probes — migrated to api::dispatch (router.cpp). POST/DELETE stay below.
 
         // =====================================================================
         // POST /api/scope/probes — Add a probe
@@ -799,14 +767,7 @@ void Server::start() {
         // =====================================================================
         // GET /api/scope/data — Get all ring buffer data
         // =====================================================================
-        CROW_ROUTE(app, "/api/scope/data")
-        ([this]() {
-            auto json = core_.oscilloscope().allDataToJson();
-            auto resp = crow::response(200, json);
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
+        // GET /api/scope/data — migrated to api::dispatch (router.cpp).
 
         // =====================================================================
         // GET /api/scheduler/classes — List class configs + live stats

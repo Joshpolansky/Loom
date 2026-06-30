@@ -10,6 +10,7 @@
 #include <deque>
 #include <shared_mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace loom {
@@ -161,6 +162,13 @@ ClassInfoDto makeClassInfoDto(const ClassDef& def, const std::vector<ClassStats>
     return dto;
 }
 
+// Response item for GET /api/modules/available (glaze-reflected; named namespace).
+struct AvailableModuleDto {
+    std::string filename;
+    std::string className;
+    std::string version;
+};
+
 namespace {
 Response json(int status, std::string body) { return {status, "application/json", std::move(body)}; }
 Response notFound() { return json(404, "{\"error\":\"no matching route\"}"); }
@@ -179,6 +187,24 @@ Response dispatch(RuntimeCore& core, const Request& req) {
         }
         body += "]";
         return json(200, std::move(body));
+    }
+
+    // GET /api/modules/available — installable module .so files. MUST precede the
+    // /api/modules/<id> prefix check below (else "available" is read as a module id).
+    if (req.method == Method::GET && req.path == "/api/modules/available") {
+        const auto& cfg = core.config();
+        auto available = ModuleLoader::queryAvailable(cfg.moduleDir);
+        std::unordered_set<std::string> seen;
+        seen.reserve(available.size() * 2);
+        for (const auto& a : available) seen.insert(a.filename);
+        for (const auto& extra : cfg.additionalModuleDirs) {
+            for (auto& a : ModuleLoader::queryAvailable(extra))
+                if (seen.insert(a.filename).second) available.push_back(std::move(a));
+        }
+        std::vector<AvailableModuleDto> dtos;
+        dtos.reserve(available.size());
+        for (auto& a : available) dtos.push_back({ a.filename, a.className, a.version });
+        return json(200, glz::write_json(dtos).value_or("[]"));
     }
 
     // GET /api/modules/<id> — one module
@@ -255,6 +281,45 @@ Response dispatch(RuntimeCore& core, const Request& req) {
         }
         body += "]";
         return json(200, std::move(body));
+    }
+
+    // GET /api/scope/schema — each module's runtime section snapshot
+    if (req.method == Method::GET && req.path == "/api/scope/schema") {
+        std::shared_lock<std::shared_mutex> lock(core.moduleMutex());
+        std::string body = "{";
+        bool first = true;
+        for (const auto& entry : core.loader().modules()) {
+            const auto& id = entry.first;
+            auto runtime = core.dataEngine().readSection(id, DataSection::Runtime);
+            if (runtime.empty()) runtime = "{}";
+            if (!first) body += ",";
+            body += "\"" + id + "\":" + runtime;
+            first = false;
+        }
+        body += "}";
+        return json(200, std::move(body));
+    }
+
+    // GET /api/scope/probes — configured probes
+    if (req.method == Method::GET && req.path == "/api/scope/probes") {
+        auto probes = core.oscilloscope().listProbes();
+        std::string body = "[";
+        bool first = true;
+        for (auto& p : probes) {
+            if (!first) body += ",";
+            body += "{\"id\":" + std::to_string(p.id)
+                  + ",\"moduleId\":\"" + p.moduleId + "\""
+                  + ",\"path\":\"" + p.path + "\""
+                  + ",\"label\":\"" + p.label + "\"}";
+            first = false;
+        }
+        body += "]";
+        return json(200, std::move(body));
+    }
+
+    // GET /api/scope/data — all captured probe samples
+    if (req.method == Method::GET && req.path == "/api/scope/data") {
+        return json(200, core.oscilloscope().allDataToJson());
     }
 
     return notFound();
