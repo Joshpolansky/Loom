@@ -38,6 +38,12 @@ struct RuntimeConfig {
     std::vector<std::filesystem::path> additionalModuleDirs;
     std::filesystem::path dataDir         = "./data";
     std::chrono::milliseconds defaultCyclePeriod{100};
+
+    /// Cooperative (thread-free) mode: skip starting class threads and the file
+    /// watcher in loadModules(). The host drives execution by calling
+    /// scheduler().tickOnce() itself. Used by single-threaded hosts (the WASM
+    /// build); leave false for the normal threaded runtime.
+    bool cooperative = false;
 };
 
 /// Central runtime controller. Owns all subsystems and module lifecycle operations.

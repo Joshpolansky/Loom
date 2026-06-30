@@ -160,9 +160,9 @@ std::vector<std::string> RuntimeCore::loadModules() {
             spdlog::warn("No modules loaded from instances.json");
             return ids;
         }
-        scheduler_.startClasses();
+        if (!config_.cooperative) scheduler_.startClasses();
         ioMapper_.resolveAll(*this);
-        setupWatcher();
+        if (!config_.cooperative) setupWatcher();
         return ids;
     }
 
@@ -200,9 +200,9 @@ std::vector<std::string> RuntimeCore::loadModules() {
         spdlog::info("Wrote instances.json with {} entry(ies)", discovered.size());
     }
 
-    scheduler_.startClasses();
+    if (!config_.cooperative) scheduler_.startClasses();
     ioMapper_.resolveAll(*this);
-    setupWatcher();
+    if (!config_.cooperative) setupWatcher();
     return ids;
 }
  
