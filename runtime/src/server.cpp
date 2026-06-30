@@ -45,13 +45,8 @@ namespace loom {
 // Plain aggregate structs — glaze auto-reflects these with no macros.
 // ---------------------------------------------------------------------------
 
-struct PatchBody { std::string ptr; glz::raw_json value; };
-
-/// Request body for POST /api/scope/probes.
-struct AddProbeRequest {
-    std::string moduleId;
-    std::string path;
-};
+// PatchBody / AddProbeRequest / InstantiateRequest moved to api/router.cpp with
+// the routes that used them (data/<section> PATCH, scope/probes POST, modules/instantiate).
 
 // Request payload for /ws/watch WebSocket messages.
 struct WatchRequest {
@@ -71,12 +66,6 @@ struct LiveSubscribeRequest {
     std::vector<std::string> topics;
 };
 
-/// Request body for POST /api/modules/instantiate.
-struct InstantiateRequest {
-    std::string id;
-    std::string so;
-};
-
 /// Response item for GET /api/modules/available. NOTE: kept here (not migrated to
 /// the catch-all) because the specific GET /api/modules/<string> route would
 /// otherwise grab "/api/modules/available" as a module id. dispatch() has its own
@@ -91,14 +80,8 @@ struct AvailableModuleDto {
 // jsonEscapeString, serializeCycleHistory and moduleInfoJson now live in
 // loom/api/json_build.h (shared verbatim with the WASM api router).
 
-// Convert DataSection string to enum
-static std::optional<DataSection> parseSectionName(const std::string& name) {
-    if (name == "config")  return DataSection::Config;
-    if (name == "recipe")  return DataSection::Recipe;
-    if (name == "runtime") return DataSection::Runtime;
-    if (name == "summary") return DataSection::Summary;
-    return std::nullopt;
-}
+// parseSectionName moved to opcrest::sectionFromName (opcua_rest_nodeid.h), used
+// directly by api/router.cpp now that the data/<section> routes live there.
 
 template <typename T>
 static glz::error_ctx readJsonPermissive(T& value, std::string_view json) {
@@ -110,67 +93,9 @@ static glz::error_ctx readJsonPermissive(T& value, std::string_view json) {
     return glz::read<kPermissiveReadOpts>(value, json, ctx);
 }
 
-// serializeCycleHistory (vector + deque overloads) → loom/api/json_build.h
-
-// Build a {"samples":[...],"latest":N} JSON body from raw samples.
-// `since`   : drop samples with t <= since (unbinned) or whose bin start <= since (binned).
-// `binMs`   : if > 0, group samples by floor(t/binMs)*binMs and emit max(cycle), max(jitter) per bin.
-// `latest`  : returned to the client so the next poll only requests new data.
-//             - unbinned: latest = max sample t emitted
-//             - binned:   latest = (last fully-elapsed bin start) so the in-progress
-//               bin is re-fetched (and re-aggregated) on the next poll.
-static std::string buildHistoryBody(const std::vector<MetricSample>& samples,
-                                    int64_t since,
-                                    int64_t binMs) {
-    std::string body = "{\"samples\":[";
-    bool first = true;
-    int64_t latest = since;
-
-    if (binMs <= 0) {
-        for (const auto& s : samples) {
-            if (s.timestampMs <= since) continue;
-            if (!first) body += ",";
-            body += "{\"t\":" + std::to_string(s.timestampMs)
-                + ",\"cycle\":" + std::to_string(s.cycleTimeUs)
-                + ",\"jitter\":" + std::to_string(s.jitterUs) + "}";
-            if (s.timestampMs > latest) latest = s.timestampMs;
-            first = false;
-        }
-    } else {
-        // Aggregate into bins: bin start = floor(t / binMs) * binMs.
-        // Emit max cycle and max |jitter| per bin (jitter is signed; magnitude
-        // is what's interesting on the chart).
-        struct Agg { int64_t maxCycle = 0; int64_t maxJitter = 0; };
-        std::map<int64_t, Agg> bins;
-        int64_t lastBin = since;
-        for (const auto& s : samples) {
-            int64_t bin = (s.timestampMs / binMs) * binMs;
-            if (bin <= since) continue;
-            auto& a = bins[bin];
-            if (s.cycleTimeUs > a.maxCycle) a.maxCycle = s.cycleTimeUs;
-            int64_t aj = s.jitterUs < 0 ? -s.jitterUs : s.jitterUs;
-            if (aj > a.maxJitter) a.maxJitter = aj;
-        }
-        // Don't emit the in-progress bin: it'll be re-aggregated on the next
-        // poll, keeping each emitted bin a stable, finalized data point.
-        int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          std::chrono::system_clock::now().time_since_epoch()).count();
-        int64_t curBin = (now / binMs) * binMs;
-        for (auto& [bin, a] : bins) {
-            if (bin >= curBin) continue;
-            if (!first) body += ",";
-            body += "{\"t\":" + std::to_string(bin)
-                + ",\"cycle\":" + std::to_string(a.maxCycle)
-                + ",\"jitter\":" + std::to_string(a.maxJitter) + "}";
-            if (bin > lastBin) lastBin = bin;
-            first = false;
-        }
-        latest = lastBin;
-    }
-
-    body += "],\"latest\":" + std::to_string(latest) + "}";
-    return body;
-}
+// serializeCycleHistory (vector + deque overloads) and buildHistoryBody →
+// loom/api/json_build.h (shared with the WASM api router; the two history routes
+// that used buildHistoryBody now live in api/router.cpp).
 
 // Build JSON module info for a single module
 // moduleInfoJson → loom/api/json_build.h (shared with the WASM api router)
@@ -264,58 +189,8 @@ void Server::start() {
         // =====================================================================
         // GET /api/faults — migrated to api::dispatch (router.cpp); served by the catch-all above.
 
-        // =====================================================================
-        // GET /api/faults/<id> — Full structured report for one fault.
-        // =====================================================================
-        CROW_ROUTE(app, "/api/faults/<string>")
-        ([this](const std::string& id) {
-            auto detail = core_.faultStore().detailJson(id);
-            crow::response resp = detail
-                ? crow::response(200, *detail)
-                : crow::response(404, R"({"error":"fault not found"})");
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
-
-        // =====================================================================
-        // POST /api/modules/instantiate — Create a new instance from a .so
-        // Body: { "id": "left_motor", "so": "libexample_motor.so" }
-        // =====================================================================
-        CROW_ROUTE(app, "/api/modules/instantiate")
-        .methods("POST"_method, "OPTIONS"_method)
-        ([this](const crow::request& req) {
-            if (req.method == "OPTIONS"_method) {
-                auto resp = crow::response(204);
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                resp.add_header("Access-Control-Allow-Methods", "POST, OPTIONS");
-                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
-                return resp;
-            }
-
-            InstantiateRequest body{};
-            auto err = readJsonPermissive(body, req.body);
-            if (err || body.id.empty() || body.so.empty()) {
-                auto resp = crow::response(400, R"({"error":"body must have non-empty 'id' and 'so'"})" );
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-
-            auto resultId = core_.instantiateModule(body.so, body.id);
-            if (resultId.empty()) {
-                auto resp = crow::response(500, R"({"error":"instantiate failed"})" );
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-
-            auto resp = crow::response(200, R"({"ok":true,"id":")"
-                + resultId + R"("})");
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
+        // GET /api/faults/<id> and POST /api/modules/instantiate — migrated to
+        // api::dispatch (router.cpp).
 
         // =====================================================================
         // GET /api/modules/:id — Module detail
@@ -378,231 +253,13 @@ void Server::start() {
             return resp;
         });
 
-        // =====================================================================
-        // GET/POST /api/modules/:id/data/:section — Read or Write data section
-        // =====================================================================
-        CROW_ROUTE(app, "/api/modules/<string>/data/<string>")
-        .methods("GET"_method, "POST"_method, "OPTIONS"_method)
-        ([this](const crow::request& req, const std::string& id, const std::string& sectionName) {
-            if (req.method == "OPTIONS"_method) {
-                auto resp = crow::response(204);
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                resp.add_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
-                return resp;
-            }
-
-            auto section = parseSectionName(sectionName);
-            if (!section) {
-                auto resp = crow::response(400, R"({"error":"invalid section. Use: config, recipe, runtime"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-
-            if (req.method == "GET"_method) {
-                std::shared_lock<std::shared_mutex> lock(core_.moduleMutex());
-                auto json = core_.dataEngine().readSection(id, *section);
-                auto resp = crow::response(200, json);
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-
-            // POST — write section
-            std::shared_lock<std::shared_mutex> lock(core_.moduleMutex());
-            bool ok = core_.dataEngine().writeSection(id, *section, req.body);
-            if (ok) {
-                if (*section == DataSection::Config) {
-                    core_.dataStore().saveConfig(id, core_.dataEngine());
-                } else if (*section == DataSection::Recipe) {
-                    core_.dataStore().saveRecipe(id, "default", core_.dataEngine());
-                }
-                auto resp = crow::response(200, R"({"ok":true})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            } else {
-                auto resp = crow::response(400, R"({"error":"write failed"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-        });
-
-        // =====================================================================
-        // PATCH /api/modules/:id/data/:section — Update a single field
-        // Body: {"ptr":"/field/0/sub","value":<any json>}
-        // =====================================================================
-        CROW_ROUTE(app, "/api/modules/<string>/data/<string>")
-        .methods("PATCH"_method)
-        ([this](const crow::request& req, const std::string& id, const std::string& sectionName) {
-            auto section = parseSectionName(sectionName);
-            if (!section) {
-                auto resp = crow::response(400, R"({"error":"invalid section"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-
-            // Parse body: extract "ptr" string and keep "value" as raw JSON.
-            PatchBody body;
-            if (auto ec = readJsonPermissive(body, req.body); ec || body.ptr.empty() || body.value.str.empty()) {
-                auto resp = crow::response(400, R"({"error":"body must be {\"ptr\":\"...\",\"value\":...}"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-
-            const auto& ptr      = body.ptr;
-            const auto& valueJson = body.value.str;
-
-            std::shared_lock<std::shared_mutex> lock(core_.moduleMutex());
-            bool ok = core_.dataEngine().patchSection(id, *section, ptr, valueJson);
-            if (!ok) {
-                auto resp = crow::response(400, R"({"error":"patch failed"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-            auto resp = crow::response(200, R"({"ok":true})");
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
-
-        // =====================================================================
-        // POST /api/modules/:id/config/save — Persist config to disk
-        // =====================================================================
-        CROW_ROUTE(app, "/api/modules/<string>/config/save")
-        .methods("POST"_method, "OPTIONS"_method)
-        ([this](const crow::request& req, const std::string& id) {
-            if (req.method == "OPTIONS"_method) {
-                auto resp = crow::response(204);
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                resp.add_header("Access-Control-Allow-Methods", "POST, OPTIONS");
-                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
-                return resp;
-            }
-            std::shared_lock<std::shared_mutex> lock(core_.moduleMutex());
-            bool ok = core_.dataStore().saveConfig(id, core_.dataEngine());
-            auto resp = crow::response(ok ? 200 : 500, ok ? R"({"ok":true})" : R"({"error":"save failed"})");
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
-
-        // =====================================================================
-        // POST /api/modules/:id/config/load — Reload config from disk
-        // =====================================================================
-        CROW_ROUTE(app, "/api/modules/<string>/config/load")
-        .methods("POST"_method, "OPTIONS"_method)
-        ([this](const crow::request& req, const std::string& id) {
-            if (req.method == "OPTIONS"_method) {
-                auto resp = crow::response(204);
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                resp.add_header("Access-Control-Allow-Methods", "POST, OPTIONS");
-                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
-                return resp;
-            }
-            std::shared_lock<std::shared_mutex> lock(core_.moduleMutex());
-            core_.dataStore().loadConfig(id, core_.dataEngine());
-            auto json = core_.dataEngine().readSection(id, DataSection::Config);
-            auto resp = crow::response(200, json);
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
-
-        // =====================================================================
-        // POST /api/modules/:id/recipe/save/:name — Persist recipe to disk
-        // =====================================================================
-        CROW_ROUTE(app, "/api/modules/<string>/recipe/save/<string>")
-        .methods("POST"_method, "OPTIONS"_method)
-        ([this](const crow::request& req, const std::string& id, const std::string& name) {
-            if (req.method == "OPTIONS"_method) {
-                auto resp = crow::response(204);
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                resp.add_header("Access-Control-Allow-Methods", "POST, OPTIONS");
-                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
-                return resp;
-            }
-            std::shared_lock<std::shared_mutex> lock(core_.moduleMutex());
-            bool ok = core_.dataStore().saveRecipe(id, name, core_.dataEngine());
-            auto resp = crow::response(ok ? 200 : 500, ok ? R"({"ok":true})" : R"({"error":"save failed"})");
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
-
-        // =====================================================================
-        // POST /api/modules/:id/recipe/load/:name — Load recipe from disk
-        // =====================================================================
-        CROW_ROUTE(app, "/api/modules/<string>/recipe/load/<string>")
-        .methods("POST"_method, "OPTIONS"_method)
-        ([this](const crow::request& req, const std::string& id, const std::string& name) {
-            if (req.method == "OPTIONS"_method) {
-                auto resp = crow::response(204);
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                resp.add_header("Access-Control-Allow-Methods", "POST, OPTIONS");
-                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
-                return resp;
-            }
-            std::shared_lock<std::shared_mutex> lock(core_.moduleMutex());
-            core_.dataStore().loadRecipe(id, name, core_.dataEngine());
-            auto json = core_.dataEngine().readSection(id, DataSection::Recipe);
-            auto resp = crow::response(200, json);
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
-
-        // =====================================================================
-        // DELETE /api/modules/:id — Remove a module instance
-        // =====================================================================
-        CROW_ROUTE(app, "/api/modules/<string>")
-        .methods("DELETE"_method)
-        ([this](const std::string& id) {
-            bool ok = core_.removeInstance(id);
-            if (!ok) {
-                auto resp = crow::response(404, R"({"error":"instance not found"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-            auto resp = crow::response(200, R"({"ok":true})");
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
-
-        // =====================================================================
-        // POST /api/modules/:id/reload — Warm-restart a module
-        // =====================================================================
-        CROW_ROUTE(app, "/api/modules/<string>/reload")
-        .methods("POST"_method, "OPTIONS"_method)
-        ([this](const crow::request& req, const std::string& id) {
-            if (req.method == "OPTIONS"_method) {
-                auto resp = crow::response(204);
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                resp.add_header("Access-Control-Allow-Methods", "POST, OPTIONS");
-                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
-                return resp;
-            }
-
-            bool ok = core_.reloadModule(id);
-            if (!ok) {
-                auto resp = crow::response(500, R"({"error":"reload failed"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-
-            auto resp = crow::response(200, R"({"ok":true,"message":"module reloaded"})");
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
+        // GET/POST/PUT/PATCH /api/modules/<id>/data/<section>, POST
+        // /api/modules/<id>/config/{save,load}, POST
+        // /api/modules/<id>/recipe/{save,load}/<name>, DELETE /api/modules/<id>,
+        // and POST /api/modules/<id>/reload — migrated to api::dispatch
+        // (router.cpp). reload is safe under wasm now too — see the reassign note
+        // above; reload's reloadModule() goes through the same scheduler
+        // stop()/start() path.
 
         // =====================================================================
         // POST /api/modules/upload — Upload a new or replacement .so module
@@ -693,76 +350,8 @@ void Server::start() {
         // =====================================================================
         // GET /api/scope/probes — List active probes
         // =====================================================================
-        // GET /api/scope/probes — migrated to api::dispatch (router.cpp). POST/DELETE stay below.
-
-        // =====================================================================
-        // POST /api/scope/probes — Add a probe
-        // Body: {"moduleId": "...", "path": "/fieldname"}
-        // =====================================================================
-        CROW_ROUTE(app, "/api/scope/probes")
-        .methods("POST"_method, "OPTIONS"_method)
-        ([this](const crow::request& req) {
-            if (req.method == "OPTIONS"_method) {
-                auto resp = crow::response(204);
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                resp.add_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
-                return resp;
-            }
-
-            AddProbeRequest req_body;
-            if (auto err = readJsonPermissive(req_body, req.body); err) {
-                auto resp = crow::response(400, R"({"error":"invalid JSON body"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-            if (req_body.moduleId.empty() || req_body.path.empty()) {
-                auto resp = crow::response(400, R"({"error":"moduleId and path required"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-
-            auto id = core_.oscilloscope().addProbe(req_body.moduleId, req_body.path);
-            auto resp = crow::response(200, "{\"ok\":true,\"id\":" + std::to_string(id) + "}");
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
-
-        // =====================================================================
-        // DELETE /api/scope/probes/:id — Remove a probe
-        // =====================================================================
-        CROW_ROUTE(app, "/api/scope/probes/<string>")
-        .methods("DELETE"_method, "OPTIONS"_method)
-        ([this](const crow::request& req, const std::string& probeIdStr) {
-            if (req.method == "OPTIONS"_method) {
-                auto resp = crow::response(204);
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                resp.add_header("Access-Control-Allow-Methods", "DELETE, OPTIONS");
-                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
-                return resp;
-            }
-            uint64_t probeId = 0;
-            try { probeId = std::stoull(probeIdStr); } catch (...) {
-                auto resp = crow::response(400, R"({"error":"invalid probe id"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-            bool ok = core_.oscilloscope().removeProbe(probeId);
-            if (!ok) {
-                auto resp = crow::response(404, R"({"error":"probe not found"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-            auto resp = crow::response(200, R"({"ok":true})");
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
+        // GET /api/scope/probes, POST /api/scope/probes, DELETE
+        // /api/scope/probes/<id> — migrated to api::dispatch (router.cpp).
 
         // =====================================================================
         // GET /api/scope/data — Get all ring buffer data
@@ -774,359 +363,23 @@ void Server::start() {
         // =====================================================================
         // GET /api/scheduler/classes — migrated to api::dispatch (router.cpp).
 
-        // =====================================================================
-        // POST /api/scheduler/classes — Create a new class definition
-        // Body: {"name": "myclass", "period_us": 20000, "priority": 50, "cpu_affinity": -1, "spin_us": 0}
-        // =====================================================================
-        CROW_ROUTE(app, "/api/scheduler/classes")
-        .methods("POST"_method)
-        ([this](const crow::request& req) {
-            ClassDef def;
-            if (auto err = readJsonPermissive(def, req.body); err) {
-                auto resp = crow::response(400, R"({"error":"invalid JSON body"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-            if (def.name.empty()) {
-                auto resp = crow::response(400, R"({"error":"name is required"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-            if (!core_.scheduler().addClassDef(def)) {
-                auto resp = crow::response(409, R"({"error":"class already exists"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-            core_.saveSchedulerConfig();
-            auto resp = crow::response(201, R"({"ok":true})");
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
-
-        // =====================================================================
-        // PATCH /api/scheduler/classes/:name — Update class definition
-        // Body: {"period_us": 10000, "priority": 50, "cpu_affinity": -1}
-        // =====================================================================
-        CROW_ROUTE(app, "/api/scheduler/classes/<string>")
-        .methods("PATCH"_method, "OPTIONS"_method)
-        ([this](const crow::request& req, const std::string& className) {
-            if (req.method == "OPTIONS"_method) {
-                auto resp = crow::response(204);
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                resp.add_header("Access-Control-Allow-Methods", "PATCH, OPTIONS");
-                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
-                return resp;
-            }
-
-            // Find current definition
-            auto defs = core_.scheduler().classConfigs();
-            ClassDef updated;
-            bool found = false;
-            for (auto& d : defs) {
-                if (d.name == className) { updated = d; found = true; break; }
-            }
-            if (!found) {
-                auto resp = crow::response(404, R"({"error":"class not found"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-
-            // Deserialize patch: glaze only overwrites fields present in the JSON body,
-            // leaving all other fields at their current values (PATCH semantics for free).
-            if (auto err = readJsonPermissive(updated, req.body); err) {
-                auto resp = crow::response(400, R"({"error":"invalid JSON body"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-            // Never allow the client to rename a class via PATCH
-            updated.name = className;
-
-            core_.scheduler().updateClassDef(updated);
-            core_.saveSchedulerConfig();
-
-            auto resp = crow::response(200, R"({"ok":true})");
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
-
-        // =====================================================================
-        // GET /api/scheduler/schema — JSON Schema for SchedulerConfig
-        // =====================================================================
-        CROW_ROUTE(app, "/api/scheduler/schema")
-        ([this]() {
-            auto schema = glz::write_json_schema<SchedulerConfig>().value_or("{}");
-            auto resp = crow::response(200, schema);
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
-
-        // =====================================================================
-        // GET /api/scheduler/modules/:id/history?since=<ms>&bin=<ms>
-        //   Returns the per-module cycle/jitter ring buffer as a JSON array.
-        //   `since` (optional) filters to samples newer than the given timestamp.
-        //   `bin`   (optional) groups samples into fixed-width bins; each bin
-        //           reports max cycle and max |jitter| within the window.
-        // =====================================================================
-        CROW_ROUTE(app, "/api/scheduler/modules/<string>/history")
-        ([this](const crow::request& req, const std::string& id) {
-            auto* ts = core_.scheduler().taskState(id);
-            if (!ts) {
-                auto resp = crow::response(404, "{\"error\":\"module not found\"}");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-            int64_t since = 0;
-            int64_t binMs = 0;
-            if (auto p = req.url_params.get("since")) { try { since = std::stoll(p); } catch (...) {} }
-            if (auto p = req.url_params.get("bin"))   { try { binMs = std::stoll(p); } catch (...) {} }
-            std::vector<MetricSample> samples;
-            {
-                std::lock_guard lk(ts->cycleHistoryMx);
-                samples = ts->cycleHistory.getAll();
-            }
-            auto body = buildHistoryBody(samples, since, binMs);
-            auto resp = crow::response(200, body);
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
-
-        // =====================================================================
-        // GET /api/scheduler/classes/:name/history?since=<ms>&bin=<ms>
-        //   Returns the per-class cycle/jitter ring buffer (binned if bin > 0).
-        // =====================================================================
-        CROW_ROUTE(app, "/api/scheduler/classes/<string>/history")
-        ([this](const crow::request& req, const std::string& name) {
-            auto deque = core_.scheduler().classHistory(name);
-            std::vector<MetricSample> samples(deque.begin(), deque.end());
-            int64_t since = 0;
-            int64_t binMs = 0;
-            if (auto p = req.url_params.get("since")) { try { since = std::stoll(p); } catch (...) {} }
-            if (auto p = req.url_params.get("bin"))   { try { binMs = std::stoll(p); } catch (...) {} }
-            auto body = buildHistoryBody(samples, since, binMs);
-            auto resp = crow::response(200, body);
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
+        // POST /api/scheduler/classes (add), PATCH /api/scheduler/classes/<name>
+        // (update), GET /api/scheduler/schema, GET /api/scheduler/modules/<id>/history
+        // and GET /api/scheduler/classes/<name>/history (both ?since=&bin=) —
+        // migrated to api::dispatch (router.cpp).
 
         // =====================================================================
         // GET /api/io-mappings — List all I/O mappings with resolution status
         // =====================================================================
         // GET /api/io-mappings — migrated to api::dispatch (router.cpp). POST below stays.
 
-        // =====================================================================
-        // POST /api/io-mappings — Add a new mapping
-        // Body: {"source": "left_motor.runtime.speed", "target": "controller.runtime.input", "enabled": true}
-        // =====================================================================
-        CROW_ROUTE(app, "/api/io-mappings")
-        .methods("POST"_method, "OPTIONS"_method)
-        ([this](const crow::request& req) {
-            if (req.method == "OPTIONS"_method) {
-                auto resp = crow::response(204);
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                resp.add_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
-                return resp;
-            }
+        // POST /api/io-mappings, DELETE/PATCH /api/io-mappings/<index>, and
+        // POST /api/io-mappings/resolve — migrated to api::dispatch (router.cpp).
 
-            IOMapEntry entry;
-            if (auto err = readJsonPermissive(entry, req.body); err) {
-                auto resp = crow::response(400, R"({"error":"invalid JSON body"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-            if (entry.source.empty() || entry.target.empty()) {
-                auto resp = crow::response(400, R"({"error":"source and target are required"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-
-            auto index = core_.ioMapper().addMapping(entry.source, entry.target, entry.enabled);
-            core_.ioMapper().resolveAll(core_);
-
-            auto resp = crow::response(201, "{\"ok\":true,\"index\":" + std::to_string(index) + "}");
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
-
-        // =====================================================================
-        // DELETE/PATCH /api/io-mappings/:index — Remove or update a mapping
-        // =====================================================================
-        CROW_ROUTE(app, "/api/io-mappings/<string>")
-        .methods("DELETE"_method, "PATCH"_method, "OPTIONS"_method)
-        ([this](const crow::request& req, const std::string& indexStr) {
-            if (req.method == "OPTIONS"_method) {
-                auto resp = crow::response(204);
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                resp.add_header("Access-Control-Allow-Methods", "DELETE, PATCH, OPTIONS");
-                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
-                return resp;
-            }
-
-            size_t index = 0;
-            try { index = std::stoull(indexStr); } catch (...) {
-                auto resp = crow::response(400, R"({"error":"invalid index"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-
-            if (req.method == "DELETE"_method) {
-                // DELETE: remove mapping
-                if (!core_.ioMapper().removeMapping(index)) {
-                    auto resp = crow::response(404, R"({"error":"mapping not found"})");
-                    resp.add_header("Content-Type", "application/json");
-                    resp.add_header("Access-Control-Allow-Origin", "*");
-                    return resp;
-                }
-                auto resp = crow::response(200, R"({"ok":true})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            } else if (req.method == "PATCH"_method) {
-                // PATCH: update mapping
-                if (index >= core_.ioMapper().entryCount()) {
-                    auto resp = crow::response(404, R"({"error":"mapping not found"})");
-                    resp.add_header("Content-Type", "application/json");
-                    resp.add_header("Access-Control-Allow-Origin", "*");
-                    return resp;
-                }
-
-                IOMapEntry entry;
-                if (auto err = readJsonPermissive(entry, req.body); err) {
-                    auto resp = crow::response(400, R"({"error":"invalid JSON body"})");
-                    resp.add_header("Content-Type", "application/json");
-                    resp.add_header("Access-Control-Allow-Origin", "*");
-                    return resp;
-                }
-                if (entry.source.empty() || entry.target.empty()) {
-                    auto resp = crow::response(400, R"({"error":"source and target are required"})");
-                    resp.add_header("Content-Type", "application/json");
-                    resp.add_header("Access-Control-Allow-Origin", "*");
-                    return resp;
-                }
-
-                if (!core_.ioMapper().updateMapping(index, entry.source, entry.target, entry.enabled)) {
-                    auto resp = crow::response(500, R"({"error":"update failed"})");
-                    resp.add_header("Content-Type", "application/json");
-                    resp.add_header("Access-Control-Allow-Origin", "*");
-                    return resp;
-                }
-
-                core_.ioMapper().resolveAll(core_);
-
-                auto resp = crow::response(200, R"({"ok":true})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-
-            auto resp = crow::response(405, R"({"error":"method not allowed"})");
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
-
-        // =====================================================================
-        // POST /api/io-mappings/resolve — Force re-resolve all mappings
-        // =====================================================================
-        CROW_ROUTE(app, "/api/io-mappings/resolve")
-        .methods("POST"_method, "OPTIONS"_method)
-        ([this](const crow::request& req) {
-            if (req.method == "OPTIONS"_method) {
-                auto resp = crow::response(204);
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                resp.add_header("Access-Control-Allow-Methods", "POST, OPTIONS");
-                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
-                return resp;
-            }
-
-            core_.ioMapper().resolveAll(core_);
-            auto resp = crow::response(200, R"({"ok":true})");
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
-
-        // =====================================================================
-        // POST /api/scheduler/reassign — Move a module to a different class
-        // Body: {"moduleId": "...", "class": "...", "order": 0 (optional)}
-        // =====================================================================
-        CROW_ROUTE(app, "/api/scheduler/reassign")
-        .methods("POST"_method, "OPTIONS"_method)
-        ([this](const crow::request& req) {
-            if (req.method == "OPTIONS"_method) {
-                auto resp = crow::response(204);
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                resp.add_header("Access-Control-Allow-Methods", "POST, OPTIONS");
-                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
-                return resp;
-            }
-
-            // Parse body manually (keep the dep-light pattern of the rest of server.cpp).
-            std::string moduleId, newClass;
-            std::optional<int> newOrder;
-
-            // Simple key extraction — body is expected to be compact JSON.
-            auto extract = [&](const std::string& key) -> std::string {
-                auto pos = req.body.find("\"" + key + "\"");
-                if (pos == std::string::npos) return {};
-                pos = req.body.find(':', pos);
-                if (pos == std::string::npos) return {};
-                ++pos;
-                while (pos < req.body.size() && req.body[pos] == ' ') ++pos;
-                if (pos >= req.body.size()) return {};
-                if (req.body[pos] == '"') {
-                    ++pos;
-                    auto end = req.body.find('"', pos);
-                    return (end != std::string::npos) ? req.body.substr(pos, end - pos) : "";
-                }
-                auto end = req.body.find_first_of(",}", pos);
-                return (end != std::string::npos) ? req.body.substr(pos, end - pos) : "";
-            };
-
-            moduleId = extract("moduleId");
-            newClass = extract("class");
-            auto orderStr = extract("order");
-
-            if (moduleId.empty() || newClass.empty()) {
-                auto resp = crow::response(400, R"({"error":"moduleId and class are required"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-
-            if (!orderStr.empty()) {
-                try { newOrder = std::stoi(orderStr); } catch (...) {}
-            }
-
-            auto ec = core_.scheduler().reassignClass(moduleId, newClass, newOrder);
-            if (ec) {
-                auto resp = crow::response(400, "{\"error\":\"" + ec.message() + "\"}");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-            core_.saveSchedulerConfig();
-
-            auto resp = crow::response(200, R"({"ok":true})");
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
+        // POST /api/scheduler/reassign — migrated to api::dispatch (router.cpp).
+        // Safe under wasm now: Scheduler::pauseClass()/unpauseClass() are no-ops
+        // under EMSCRIPTEN (see scheduler.cpp), so the insertMember()/removeMember()
+        // pause-handshake this goes through no longer deadlocks the cooperative host.
 
         // =====================================================================
         // GET /api/bus/topics — List bus topics
@@ -1138,36 +391,7 @@ void Server::start() {
         // =====================================================================
         // GET /api/bus/services — migrated to api::dispatch (router.cpp).
 
-        // =====================================================================
-        // POST /api/bus/services/:name — Call a bus service
-        // =====================================================================
-        CROW_ROUTE(app, "/api/bus/call/<path>")
-        .methods("POST"_method, "OPTIONS"_method)
-        ([this](const crow::request& req, const std::string& serviceName) {
-            if (req.method == "OPTIONS"_method) {
-                auto resp = crow::response(204);
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                resp.add_header("Access-Control-Allow-Methods", "POST, OPTIONS");
-                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
-                return resp;
-            }
-
-            auto result = core_.bus().call(serviceName, req.body);
-            std::string json = "{";
-            json += "\"ok\":" + std::string(result.ok ? "true" : "false");
-            if (!result.response.empty()) {
-                json += ",\"response\":" + result.response;
-            }
-            if (!result.error.empty()) {
-                json += ",\"error\":\"" + result.error + "\"";
-            }
-            json += "}";
-
-            auto resp = crow::response(200, json);
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
+        // POST /api/bus/call/<serviceName> — migrated to api::dispatch (router.cpp).
 
         // =====================================================================
         // WebSocket /ws — Live data streaming with topic subscriptions.
@@ -1563,8 +787,37 @@ void Server::start() {
         // after every real route (REST + WebSocket) gives it the highest index,
         // so it only wins when no literal route matches — otherwise it would
         // shadow the facade's GET endpoints and the pushchannel WS upgrade.
+        //
+        // GOTCHA: this only protects against routes Crow can match as a single
+        // node (a literal segment, or a route with exactly the registered shape).
+        // For a path under /api/ whose exact segment-shape was never registered
+        // as its own CROW_ROUTE (e.g. /api/modules/<id>/data/<section>, now only
+        // known to api::dispatch, not to Crow's trie), Crow's GET-only "/<path>"
+        // here apparently still wins the match over the GET+POST+PATCH+DELETE
+        // "/api/<path>" catch-all below, despite being registered first and
+        // /api/<path> being the more specific literal-prefixed route — verified
+        // empirically (curl): GET returned an empty 200 text/html (this handler's
+        // serveIndex() fallback) for such paths, while POST/PATCH/DELETE to the
+        // exact same paths worked, because "/<path>" never registers those
+        // methods so there's no ambiguity for them. Rather than depend further on
+        // Crow's wildcard-tie-breaking, this handler explicitly hands off any
+        // "api/..." path to the SAME dispatch() the /api/<path> catch-all below
+        // uses, so GET correctness doesn't depend on which wildcard Crow resolves to.
         CROW_ROUTE(app, "/<path>")
-        ([serveIndex](crow::response& res, const std::string& filePathPartial) {
+        ([this, serveIndex](const crow::request& creq, crow::response& res, const std::string& filePathPartial) {
+            if (filePathPartial.rfind("api/", 0) == 0) {
+                api::Request areq;
+                areq.method = crowMethodToApi(creq.method);
+                areq.path   = creq.raw_url;
+                areq.body   = creq.body;
+                api::Response ares = api::dispatch(core_, areq);
+                res.code = ares.status;
+                res.body = ares.body;
+                res.add_header("Content-Type", ares.contentType);
+                res.add_header("Access-Control-Allow-Origin", "*");
+                res.end();
+                return;
+            }
             std::error_code ec;
             const std::string full = g_crowStaticDir + filePathPartial;
             if (std::filesystem::is_regular_file(full, ec)) {
@@ -1579,13 +832,19 @@ void Server::start() {
         // ---- /api/* catch-all → shared dispatch (registered LAST so the static
         // routes above take priority; this only handles paths none of them match,
         // i.e. routes already migrated into api::dispatch and shared with WASM).
+        // GET is handled by "/<path>" above (see its comment) — kept here too
+        // since it's harmless dead weight if ever reached, and POST/PUT/PATCH/
+        // DELETE reliably reach this one (no GET-only sibling to contend with).
         CROW_ROUTE(app, "/api/<path>").methods(
             crow::HTTPMethod::Get, crow::HTTPMethod::Post, crow::HTTPMethod::Put,
             crow::HTTPMethod::Patch, crow::HTTPMethod::Delete)
         ([this](const crow::request& creq, const std::string&) {
             api::Request areq;
             areq.method = crowMethodToApi(creq.method);
-            areq.path   = creq.url;
+            // raw_url includes the "?query" suffix (creq.url is path-only) — dispatch()
+            // splits it back apart itself, matching what the wasm host already passes
+            // (JS's pathname + search), so history-style ?since=&bin= routes work natively too.
+            areq.path   = creq.raw_url;
             areq.body   = creq.body;
             api::Response ares = api::dispatch(core_, areq);
             crow::response resp(ares.status, ares.body);

@@ -8,6 +8,7 @@
 #include "loom/scheduler.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <string>
 #include <vector>
@@ -24,5 +25,10 @@ std::string serializeCycleHistory(const std::deque<MetricSample>& samples, std::
 
 /// Per-module info object (id, name, class, state, path, stats + cycle history).
 std::string moduleInfoJson(const LoadedModule& mod, const Scheduler& scheduler);
+
+/// Cycle/jitter history as `{"samples":[...], "latest":<ms>}`. `since` filters to
+/// samples newer than the given timestamp; `binMs` > 0 aggregates into fixed-width
+/// bins (max cycle, max |jitter| per bin) instead of emitting raw samples.
+std::string buildHistoryBody(const std::vector<MetricSample>& samples, int64_t since, int64_t binMs);
 
 } // namespace loom
