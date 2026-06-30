@@ -75,18 +75,38 @@ char* loom_module_ids() {
 }
 
 // Route a REST request (method, path, body) through the same transport-agnostic
-// dispatcher the native HTTP server uses. Returns the response body as a malloc'd
-// C string (caller free()s); the JS service intercepts fetch('/api/*') and calls
-// this. (Status code wiring comes with the React service; body is enough here.)
+// dispatcher the native HTTP server uses. Returns a malloc'd JSON envelope
+// {"status":<int>,"body":<raw json>} (caller free()s) so the JS fetch shim can
+// build a Response with the right status. Body is embedded raw (every handler
+// returns valid JSON).
 EMSCRIPTEN_KEEPALIVE
 char* loom_request(const char* method, const char* path, const char* body) {
-    if (!g_core) return nullptr;
+    if (!g_core) return dupString("{\"status\":503,\"body\":null}");
     loom::api::Request req;
     req.method = loom::api::methodFromString(method ? method : "GET");
     req.path   = path ? path : "";
     req.body   = body ? body : "";
     loom::api::Response resp = loom::api::dispatch(*g_core, req);
-    return dupString(resp.body);
+    std::string env = "{\"status\":" + std::to_string(resp.status) +
+                      ",\"body\":" + (resp.body.empty() ? "null" : resp.body) + "}";
+    return dupString(env);
+}
+
+// Load an arbitrary user module from a file already written into the Emscripten
+// FS (the JS service FS.writeFile()s the bytes, then calls this). Copies it into
+// the module dir, loads + starts it cooperatively. Returns the loaded module id
+// (empty string on failure). malloc'd; caller free()s.
+EMSCRIPTEN_KEEPALIVE
+char* loom_load_module(const char* path) {
+    if (!g_core || !path) return dupString("");
+    try {
+        std::string id = g_core->uploadModule(path);
+        if (!id.empty()) g_ids.push_back(id);
+        return dupString(id);
+    } catch (const std::exception& e) {
+        spdlog::error("loom_load_module('{}') failed: {}", path, e.what());
+        return dupString("");
+    }
 }
 
 // Reflected runtime state of one module instance, as a JSON string. Returns a
