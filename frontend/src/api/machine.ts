@@ -1,4 +1,5 @@
 import { OpcuaMachine } from '@loupeteam/lux-connect';
+import { isWasmMode } from '../wasm/wasmMode';
 
 // One OpcuaMachine for the whole app, pointed at the same origin that served the
 // UI (the Loom runtime's mapp Connect-compatible facade). Same origin means no
@@ -6,7 +7,7 @@ import { OpcuaMachine } from '@loupeteam/lux-connect';
 const loc = window.location;
 const isHttps = loc.protocol === 'https:';
 const port = loc.port ? Number(loc.port) : isHttps ? 443 : 80;
-const useWasm = new URLSearchParams(loc.search).has('wasm');
+const useWasm = isWasmMode();
 
 // In wasm mode the app drives an in-browser WasmMachine (see wasm/boot.ts), so
 // DON'T create a real OPC-UA connection here — components import node()/classNode()

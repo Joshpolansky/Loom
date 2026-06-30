@@ -10,6 +10,7 @@
 // @ts-expect-error — plain-JS runtime service (see loomRuntime.js)
 import { createLoomRuntime } from './loomRuntime.js';
 import { WasmMachine } from './WasmMachine';
+import { isWasmMode } from './wasmMode';
 
 function loadScript(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -26,8 +27,7 @@ function loadScript(src: string): Promise<void> {
 const WASM_MODULES = ['demo_module.so'];
 
 export async function bootMachine(): Promise<unknown> {
-  const useWasm = new URLSearchParams(location.search).has('wasm');
-  if (!useWasm) {
+  if (!isWasmMode()) {
     return (await import('../api/machine')).machine; // native: real OpcuaMachine
   }
 
