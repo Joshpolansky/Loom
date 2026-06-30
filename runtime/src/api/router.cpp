@@ -2,6 +2,7 @@
 #include "loom/api/json_build.h"
 
 #include "loom/runtime_core.h"
+#include "loom/opcua_rest_nodeid.h"  // opcrest::sectionFromName
 #include "loom/diag/breadcrumb.h"   // diag::phaseName
 
 #include <deque>
@@ -149,6 +150,19 @@ Response dispatch(RuntimeCore& core, const Request& req) {
             auto* mod = core.loader().get(id);
             if (!mod) return json(404, "{\"error\":\"module not found\"}");
             return json(200, moduleInfoJson(*mod, core.scheduler()));
+        }
+
+        // GET /api/modules/<id>/data/<section> — reflected section JSON
+        auto slash = id.find('/');
+        if (slash != std::string::npos) {
+            std::string modId = id.substr(0, slash);
+            std::string tail  = id.substr(slash + 1);  // "data/<section>"
+            if (!modId.empty() && tail.rfind("data/", 0) == 0) {
+                if (auto sec = opcrest::sectionFromName(tail.substr(5))) {
+                    std::shared_lock<std::shared_mutex> lock(core.moduleMutex());
+                    return json(200, core.dataEngine().readSection(modId, *sec));
+                }
+            }
         }
     }
 

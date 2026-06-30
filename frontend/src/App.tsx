@@ -7,7 +7,6 @@ import OscilloscopeView from './pages/OscilloscopeView';
 import WatchView from './pages/WatchView';
 import { MappingView } from './pages/MappingView';
 import { MachineProvider, useMachine, ConnectionState } from '@loupeteam/lux-react';
-import { machine } from './api/machine';
 import { DataServiceContext, useDataServiceProvider } from './api/dataService';
 import './App.css';
 
@@ -102,7 +101,11 @@ function AppProviders() {
   );
 }
 
-function App() {
+// `machine` is supplied by main.tsx after boot: native passes a lux OpcuaMachine,
+// ?wasm=1 passes a duck-typed WasmMachine. (A shared machine interface would be
+// the right follow-up to drop the `any`.)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function App({ machine }: { machine: any }) {
   return (
     <BrowserRouter basename="/_loom">
       <MachineProvider id="loom" machine={machine}>

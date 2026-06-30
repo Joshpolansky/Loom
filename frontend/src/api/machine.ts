@@ -6,14 +6,21 @@ import { OpcuaMachine } from '@loupeteam/lux-connect';
 const loc = window.location;
 const isHttps = loc.protocol === 'https:';
 const port = loc.port ? Number(loc.port) : isHttps ? 443 : 80;
+const useWasm = new URLSearchParams(loc.search).has('wasm');
 
-export const machine = new OpcuaMachine({
-  host: loc.hostname,
-  port,
-  protocol: isHttps ? 'https' : 'http',
-  wsProtocol: isHttps ? 'wss' : 'ws',
-  enableWebSocket: true,
-});
+// In wasm mode the app drives an in-browser WasmMachine (see wasm/boot.ts), so
+// DON'T create a real OPC-UA connection here — components import node()/classNode()
+// from this module, and an OpcuaMachine constructed as a side effect would
+// fruitlessly try to reach a server. boot.ts uses this export only in native mode.
+export const machine = useWasm
+  ? (undefined as unknown as OpcuaMachine)
+  : new OpcuaMachine({
+      host: loc.hostname,
+      port,
+      protocol: isHttps ? 'https' : 'http',
+      wsProtocol: isHttps ? 'wss' : 'ws',
+      enableWebSocket: true,
+    });
 
 export function node(moduleId: string, section: string, path?: string): string {
   const base = `ns=1;s=/module/${moduleId}/${section}`;
