@@ -149,12 +149,16 @@ public:
     /// Idempotent: already-running classes are skipped.
     void startClasses();
 
-    /// Run exactly one cooperative scheduling pass over every class's members
-    /// (preCyclic → cyclic → I/O map → postCyclic), in place on the calling
-    /// thread — no class threads spawned, no sleeping. For single-threaded hosts
-    /// (e.g. the WASM build) that drive the runtime from an external loop instead
-    /// of startClasses(). Class periods/priorities become advisory metadata here,
-    /// not enforced timing. Do NOT mix with startClasses() on the same instance.
+    /// Run one cooperative scheduling pass: every class whose period has elapsed
+    /// (tracked against a steady clock, independently per class — see
+    /// ClassRunnerState::coopNextDue) gets one sweep of its members (preCyclic →
+    /// cyclic → I/O map → postCyclic), in place on the calling thread. No class
+    /// threads spawned, no sleeping, no RT thread policy. For single-threaded
+    /// hosts (e.g. the WASM build) that drive the runtime from an external loop
+    /// instead of startClasses(). Periods ARE enforced (a "fast" class still runs
+    /// more often than a "slow" one, capped by call frequency); priority/affinity
+    /// are NOT — they require an OS thread, which cooperative mode doesn't have.
+    /// Do NOT mix with startClasses() on the same instance.
     void tickOnce();
 
     /// Configure optional targets for cycle-aligned sampling.
