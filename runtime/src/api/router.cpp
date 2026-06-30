@@ -125,9 +125,9 @@ Method methodFromString(std::string_view s) {
 }
 
 // Scheduler DTOs (glaze auto-reflects these aggregates). In a NAMED namespace
-// because glaze reflection requires the reflected type to have linkage. NOTE:
-// duplicated with server.cpp for now — the right consolidation is to make
-// server.cpp delegate wholesale to dispatch() and host the one copy here.
+// because glaze reflection requires the reflected type to have linkage. This is
+// the single copy — server.cpp's /api/scheduler/classes route and its DTOs were
+// removed; native reaches this handler via the /api/<path> catch-all.
 struct ClassStatsDto {
     int64_t  lastJitterUs    = 0;
     int64_t  lastCycleTimeUs = 0;

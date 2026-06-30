@@ -47,25 +47,6 @@ namespace loom {
 
 struct PatchBody { std::string ptr; glz::raw_json value; };
 
-struct ClassStatsDto {
-    int64_t  lastJitterUs    = 0;
-    int64_t  lastCycleTimeUs = 0;
-    int64_t  maxCycleTimeUs  = 0;
-    uint64_t tickCount       = 0;
-    int      memberCount     = 0;
-    int64_t  lastTickStartMs = 0;
-};
-
-struct ClassInfoDto {
-    std::string name;
-    int         period_us    = 10000;
-    int         cpu_affinity = -1;
-    int         priority     = 50;
-    int         spin_us      = 0;
-    ClassStatsDto               stats;
-    std::vector<std::string>    modules;
-};
-
 /// Request body for POST /api/scope/probes.
 struct AddProbeRequest {
     std::string moduleId;
@@ -102,25 +83,6 @@ struct AvailableModuleDto {
     std::string className;
     std::string version;
 };
-
-// Build a ClassInfoDto from a ClassDef + ClassStats snapshot.
-static ClassInfoDto makeClassInfoDto(const ClassDef& def,
-                                     const std::vector<ClassStats>& allStats) {
-    ClassInfoDto dto;
-    dto.name        = def.name;
-    dto.period_us   = def.period_us;
-    dto.cpu_affinity = def.cpu_affinity;
-    dto.priority    = def.priority;
-    dto.spin_us     = def.spin_us;
-    for (const auto& s : allStats) {
-        if (s.name != def.name) continue;
-        dto.stats = { s.lastJitterUs, s.lastCycleTimeUs,
-                      s.maxCycleTimeUs, s.tickCount, s.memberCount };
-        dto.modules = s.moduleIds;
-        break;
-    }
-    return dto;
-}
 
 // Escape a raw string for embedding inside a JSON string literal.
 // jsonEscapeString, serializeCycleHistory and moduleInfoJson now live in
@@ -849,22 +811,7 @@ void Server::start() {
         // =====================================================================
         // GET /api/scheduler/classes — List class configs + live stats
         // =====================================================================
-        CROW_ROUTE(app, "/api/scheduler/classes")
-        ([this]() {
-            auto allStats = core_.scheduler().allClassStats();
-            auto defs     = core_.scheduler().classConfigs();
-
-            std::vector<ClassInfoDto> response;
-            response.reserve(defs.size());
-            for (const auto& def : defs)
-                response.push_back(makeClassInfoDto(def, allStats));
-
-            auto json = glz::write_json(response).value_or("[]");
-            auto resp = crow::response(200, json);
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
+        // GET /api/scheduler/classes — migrated to api::dispatch (router.cpp).
 
         // =====================================================================
         // POST /api/scheduler/classes — Create a new class definition
