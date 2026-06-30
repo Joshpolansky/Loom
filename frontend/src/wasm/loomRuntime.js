@@ -23,6 +23,8 @@ export async function createLoomRuntime({ createModule, tickMs = 25 } = {}) {
     request:    M.cwrap('loom_request', 'string', ['string', 'string', 'string']),
     loadModule: M.cwrap('loom_load_module', 'string', ['string']),
     moduleIds:  M.cwrap('loom_module_ids', 'string', []),
+    readNode:   M.cwrap('loom_read_node', 'string', ['string']),
+    writeNode:  M.cwrap('loom_write_node', 'number', ['string', 'string']),
   };
 
   c.init('/modules', '/data');
@@ -73,7 +75,13 @@ export async function createLoomRuntime({ createModule, tickMs = 25 } = {}) {
     return () => { if (orig) globalThis.fetch = orig; };
   }
 
+  /** Raw reflected-value JSON for an OPC-UA-style nodeId ('null' if unknown). */
+  function readNode(nodeId) { return c.readNode(nodeId); }
+
+  /** Write a reflected node value (any JSON-serializable). @returns {boolean} */
+  function writeNode(nodeId, value) { return c.writeNode(nodeId, JSON.stringify(value)) === 1; }
+
   function stop() { if (timer) { clearInterval(timer); timer = null; } }
 
-  return { Module: M, request, loadModule, moduleIds, makeFetch, installFetch, stop };
+  return { Module: M, request, loadModule, moduleIds, readNode, writeNode, makeFetch, installFetch, stop };
 }

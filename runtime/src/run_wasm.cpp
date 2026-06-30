@@ -12,6 +12,7 @@
 
 #include "loom/runtime_core.h"
 #include "loom/api/router.h"
+#include "loom/opcua_rest_nodeid.h"   // opcrest::parseNodeId (OPC-UA node addressing)
 #include "loom/types.h"
 
 #include <spdlog/spdlog.h>
@@ -116,6 +117,41 @@ char* loom_state_json(const char* moduleId) {
     if (!g_core || !moduleId) return nullptr;
     std::string js = g_core->dataEngine().readSection(moduleId, loom::DataSection::Runtime);
     return dupString(js);
+}
+
+// --- OPC-UA-style reflected tag access (backs the WasmMachine) ---------------
+// A node is "ns=1;s=/module/<id>/<section>/<field-path>" (same address space the
+// native OPC-UA facade serves). These map to IModule readField/writeField, so a
+// WasmMachine can satisfy lux-react's useVariable()/writeVariable() in-browser.
+
+// Read a node's reflected value as JSON. Returns "null" for unknown/non-value
+// nodes. malloc'd; caller free()s.
+EMSCRIPTEN_KEEPALIVE
+char* loom_read_node(const char* nodeId) {
+    if (!g_core || !nodeId) return dupString("null");
+    auto p = loom::opcrest::parseNodeId(loom::opcrest::urlDecode(nodeId));
+    using K = loom::opcrest::ParsedNode::Kind;
+    if (p.kind != K::Field && p.kind != K::Section) return dupString("null");
+    std::shared_lock<std::shared_mutex> lock(g_core->moduleMutex());
+    auto* mod = g_core->loader().get(p.moduleId);
+    if (!mod || !mod->instance) return dupString("null");
+    if (p.kind == K::Section) return dupString(mod->instance->readSection(p.section));
+    auto v = mod->instance->readField(p.section, p.fieldPointer);
+    return dupString(v ? *v : std::string("null"));
+}
+
+// Write a node's reflected value from JSON. Returns 1 on success, 0 on failure.
+EMSCRIPTEN_KEEPALIVE
+int loom_write_node(const char* nodeId, const char* valueJson) {
+    if (!g_core || !nodeId || !valueJson) return 0;
+    auto p = loom::opcrest::parseNodeId(loom::opcrest::urlDecode(nodeId));
+    using K = loom::opcrest::ParsedNode::Kind;
+    std::shared_lock<std::shared_mutex> lock(g_core->moduleMutex());
+    auto* mod = g_core->loader().get(p.moduleId);
+    if (!mod || !mod->instance) return 0;
+    if (p.kind == K::Section) return mod->instance->writeSection(p.section, valueJson) ? 1 : 0;
+    if (p.kind == K::Field)   return mod->instance->writeField(p.section, p.fieldPointer, valueJson) ? 1 : 0;
+    return 0;
 }
 
 EMSCRIPTEN_KEEPALIVE
