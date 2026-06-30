@@ -188,7 +188,7 @@ static api::Method crowMethodToApi(crow::HTTPMethod m) {
         case crow::HTTPMethod::Post:   return api::Method::POST;
         case crow::HTTPMethod::Put:    return api::Method::PUT;
         case crow::HTTPMethod::Patch:  return api::Method::PATCH;
-        case crow::HTTPMethod::Delete: return api::Method::DELETE;
+        case crow::HTTPMethod::Delete: return api::Method::DELETE_;
         default:                       return api::Method::UNKNOWN;
     }
 }

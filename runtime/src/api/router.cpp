@@ -121,7 +121,7 @@ Method methodFromString(std::string_view s) {
     if (s == "POST")   return Method::POST;
     if (s == "PUT")    return Method::PUT;
     if (s == "PATCH")  return Method::PATCH;
-    if (s == "DELETE") return Method::DELETE;
+    if (s == "DELETE") return Method::DELETE_;
     return Method::UNKNOWN;
 }
 

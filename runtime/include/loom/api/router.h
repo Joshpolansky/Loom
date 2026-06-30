@@ -13,7 +13,10 @@ class RuntimeCore;
 
 namespace api {
 
-enum class Method { GET, POST, PUT, PATCH, DELETE, UNKNOWN };
+// DELETE_ (not DELETE) because <windows.h>/winnt.h #defines DELETE as
+// (0x00010000L) — MSVC then macro-expands Method::DELETE into a syntax error
+// (C2589) regardless of namespacing, since the preprocessor runs first.
+enum class Method { GET, POST, PUT, PATCH, DELETE_, UNKNOWN };
 
 Method methodFromString(std::string_view s);
 
