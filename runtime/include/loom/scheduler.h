@@ -149,6 +149,14 @@ public:
     /// Idempotent: already-running classes are skipped.
     void startClasses();
 
+    /// Run exactly one cooperative scheduling pass over every class's members
+    /// (preCyclic → cyclic → I/O map → postCyclic), in place on the calling
+    /// thread — no class threads spawned, no sleeping. For single-threaded hosts
+    /// (e.g. the WASM build) that drive the runtime from an external loop instead
+    /// of startClasses(). Class periods/priorities become advisory metadata here,
+    /// not enforced timing. Do NOT mix with startClasses() on the same instance.
+    void tickOnce();
+
     /// Configure optional targets for cycle-aligned sampling.
     /// Pass pointers to the `Oscilloscope`, `DataEngine`, `ModuleLoader`, and
     /// the runtime `moduleMutex` so the scheduler can enqueue snapshots after
@@ -288,6 +296,11 @@ private:
 
     void classLoop(ClassRunnerState& runner);
     void isolatedLoop(LoadedModule& mod, TaskConfig config, TaskState& state);
+
+    /// One sweep over a class's members (preCyclic → cyclic → I/O → postCyclic)
+    /// with per-member/class metrics. Shared by classLoop (native thread) and
+    /// tickOnce (cooperative driver); the caller owns timing/pacing.
+    void sweepClassOnce(ClassRunnerState& runner);
 
     /// Quarantine a module that threw from a guarded call and report the fault:
     /// set faulted + ModuleState::Error, stamp last-fault fields, log, and notify

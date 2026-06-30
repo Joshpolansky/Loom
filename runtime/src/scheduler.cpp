@@ -751,6 +751,114 @@ static void storeSample(MetricRingBuffer& buffer, std::mutex& bufferMx,
     buffer.push({ nowMs, cycleTimeUs, jitterUs });
 }
 
+// ---- sweepClassOnce / tickOnce --------------------------------------------------
+
+void Scheduler::sweepClassOnce(ClassRunnerState& runner) {
+    const auto&   def         = runner.def;
+    const int64_t periodUsInt = runner.livePeriodUs.load();
+    const int64_t periodNs    = periodUsInt * 1000LL;
+
+    auto execStart = std::chrono::steady_clock::now();
+
+    // Mark a member faulted (skipped on subsequent sweeps via the faulted checks
+    // below) and report — used by the guarded calls.
+    auto faultMember = [&](auto& m, const diag::FaultInfo& f) {
+        recordModuleFault(*m.state, *m.mod, f.phase, f.message);
+    };
+
+    // --- Sweep 1: preCyclic (e.g. read hardware inputs) ---
+    for (auto& member : runner.members) {
+        if (member.state->faulted.load()) continue;
+        diag::guard(diag::Phase::PreCyclic, member.moduleId.c_str(), member.mod->className.c_str(),
+                    [&]{ member.mod->instance->preCyclicGuarded(); },
+                    [&](const diag::FaultInfo& f){ faultMember(member, f); });
+    }
+
+    // --- Sweep 2: cyclic (do work) — timed, sampled ---
+    for (auto& member : runner.members) {
+        if (member.state->faulted.load()) continue;
+
+        // Per-module jitter: |Δstart − period|
+        auto    startNow = std::chrono::steady_clock::now();
+        int64_t startNs  = startNow.time_since_epoch().count();
+        int64_t prevNs   = member.state->lastCyclicStartNs.load();
+        if (prevNs != 0) {
+            int64_t deltaNs = startNs - prevNs;
+            member.state->lastJitterUs.store(std::abs(deltaNs - periodNs) / 1000LL);
+        }
+        member.state->lastCyclicStartNs.store(startNs);
+
+        // Execute (cyclicGuarded acquires module's runtimeMutex_ so
+        // server/watch threads can't race on runtime_ reads)
+        diag::guard(diag::Phase::Cyclic, member.moduleId.c_str(), member.mod->className.c_str(),
+                    [&]{ member.mod->instance->cyclicGuarded(); },
+                    [&](const diag::FaultInfo& f){ faultMember(member, f); });
+
+        // Lightweight sampling: oscilloscope fast-path (alive member; no lock).
+        if (oscilloscope_ && dataEngine_) {
+            int64_t nowMs = static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+            oscilloscope_->sampleModule(member.moduleId, *dataEngine_,
+                                        *member.mod->instance, nowMs);
+        }
+
+        auto endNow  = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(endNow - startNow);
+        member.state->lastCycleTimeUs.store(elapsed.count());
+        member.state->cycleCount.fetch_add(1);
+
+        int64_t curMax = member.state->maxCycleTimeUs.load();
+        if (elapsed.count() > curMax)
+            member.state->maxCycleTimeUs.store(elapsed.count());
+
+        if (elapsed.count() > periodUsInt) {
+            member.state->overrunCount.fetch_add(1);
+            if (member.state->overrunCount.load() % 100 == 1) {
+                spdlog::warn("Class '{}' module '{}' cyclic overrun: {}µs > {}µs",
+                             def.name, member.moduleId, elapsed.count(), periodUsInt);
+            }
+        }
+    }
+
+    // --- Sweep 2.5: I/O mappings (copy field values between modules) ---
+    if (ioMapper_) {
+        ioMapper_->executeForClass(def.name);
+    }
+
+    // --- Sweep 3: postCyclic (e.g. flush outputs to hardware) ---
+    for (auto& member : runner.members) {
+        if (member.state->faulted.load()) continue;
+        diag::guard(diag::Phase::PostCyclic, member.moduleId.c_str(), member.mod->className.c_str(),
+                    [&]{ member.mod->instance->postCyclicGuarded(); },
+                    [&](const diag::FaultInfo& f){ faultMember(member, f); });
+    }
+
+    // --- Record total class cycle time ---
+    auto execEnd   = std::chrono::steady_clock::now();
+    auto cycleTime = std::chrono::duration_cast<std::chrono::microseconds>(execEnd - execStart).count();
+    runner.lastCycleTimeUs.store(cycleTime);
+    int64_t curMax = runner.maxCycleTimeUs.load();
+    if (cycleTime > curMax) runner.maxCycleTimeUs.store(cycleTime);
+    storeSample(runner.cycleHistory, runner.cycleHistoryMx, cycleTime, runner.lastJitterUs.load());
+}
+
+void Scheduler::tickOnce() {
+    // Cooperative single-threaded drive: sweep every class that has members,
+    // once, in place. No spin/sleep/RT policy and no pause handshake (there are
+    // no class threads to coordinate with). Used by hosts that own the loop.
+    for (auto& [name, runnerPtr] : classes_) {
+        ClassRunnerState& runner = *runnerPtr;
+        if (runner.members.empty()) continue;
+
+        runner.tickCount.fetch_add(1);
+        runner.lastTickStartMs.store(static_cast<int64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count()));
+        sweepClassOnce(runner);
+    }
+}
+
 // ---- classLoop ------------------------------------------------------------------
 
 void Scheduler::classLoop(ClassRunnerState& runner) {
@@ -827,105 +935,10 @@ void Scheduler::classLoop(ClassRunnerState& runner) {
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count()));
 
-        // --- Execute each member sequentially ---
-        // NOTE: runner.members is only mutated when the class is paused (below).
-        //       Reading it here without a lock is safe.
-        auto execStart = std::chrono::steady_clock::now();
-
-        // Mark a member faulted (skipped on subsequent sweeps/ticks via the
-        // faulted checks below) and report — used by the guarded calls.
-        auto faultMember = [&](auto& m, const diag::FaultInfo& f) {
-            recordModuleFault(*m.state, *m.mod, f.phase, f.message);
-        };
-
-        // --- Sweep 1: preCyclic (e.g. read hardware inputs) ---
-        for (auto& member : runner.members) {
-            if (member.state->faulted.load()) continue;
-            diag::guard(diag::Phase::PreCyclic, member.moduleId.c_str(), member.mod->className.c_str(),
-                        [&]{ member.mod->instance->preCyclicGuarded(); },
-                        [&](const diag::FaultInfo& f){ faultMember(member, f); });
-        }
-
-        // --- Sweep 2: cyclic (do work) — timed, sampled ---
-        for (auto& member : runner.members) {
-            if (member.state->faulted.load()) continue;
-
-            // Per-module jitter: |Δstart − period|
-            auto   startNow = std::chrono::steady_clock::now();
-            int64_t startNs  = startNow.time_since_epoch().count();
-            int64_t prevNs   = member.state->lastCyclicStartNs.load();
-            if (prevNs != 0) {
-                int64_t deltaNs = startNs - prevNs;
-                member.state->lastJitterUs.store(
-                    std::abs(deltaNs - periodNs) / 1000LL);
-            }
-            member.state->lastCyclicStartNs.store(startNs);
-
-            // Execute (cyclicGuarded acquires module's runtimeMutex_ so
-            // server/watch threads can't race on runtime_ reads)
-            diag::guard(diag::Phase::Cyclic, member.moduleId.c_str(), member.mod->className.c_str(),
-                        [&]{ member.mod->instance->cyclicGuarded(); },
-                        [&](const diag::FaultInfo& f){ faultMember(member, f); });
-
-            // Lightweight sampling: use oscilloscope fast-path.
-            // A member in runner.members is guaranteed alive — removeMember() pauses
-            // the class and waits for ack BEFORE erasing, so no moduleMutex_ needed.
-            // We try_lock the module's runtimeMutex_ so we never block the caller;
-            // missing one sample tick is acceptable.
-            if (oscilloscope_ && dataEngine_) {
-                int64_t nowMs = static_cast<int64_t>(
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::system_clock::now().time_since_epoch()).count());
-                oscilloscope_->sampleModule(member.moduleId, *dataEngine_,
-                                            *member.mod->instance, nowMs);
-            }
-
-            auto   endNow = std::chrono::steady_clock::now();
-            auto   elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-                endNow - startNow);
-            member.state->lastCycleTimeUs.store(elapsed.count());
-            member.state->cycleCount.fetch_add(1);
-
-            int64_t curMax = member.state->maxCycleTimeUs.load();
-            if (elapsed.count() > curMax)
-                member.state->maxCycleTimeUs.store(elapsed.count());
-
-            int64_t periodUsInt = periodUs.count();  // live period (see top of loop)
-            if (elapsed.count() > periodUsInt) {
-                member.state->overrunCount.fetch_add(1);
-                if (member.state->overrunCount.load() % 100 == 1) {
-                    spdlog::warn("Class '{}' module '{}' cyclic overrun: {}µs > {}µs",
-                                 def.name, member.moduleId, elapsed.count(), periodUsInt);
-                }
-            }
-        }
-
-        // --- Sweep 2.5: I/O mappings (copy field values between modules) ---
-        if (ioMapper_) {
-            ioMapper_->executeForClass(def.name);
-        }
-
-        // --- Sweep 3: postCyclic (e.g. flush outputs to hardware) ---
-        for (auto& member : runner.members) {
-            if (member.state->faulted.load()) continue;
-            diag::guard(diag::Phase::PostCyclic, member.moduleId.c_str(), member.mod->className.c_str(),
-                        [&]{ member.mod->instance->postCyclicGuarded(); },
-                        [&](const diag::FaultInfo& f){ faultMember(member, f); });
-        }
-
-        // --- Record total class cycle time ---
-        {
-            auto execEnd   = std::chrono::steady_clock::now();
-            auto cycleTime = std::chrono::duration_cast<std::chrono::microseconds>(
-                execEnd - execStart).count();
-            runner.lastCycleTimeUs.store(cycleTime);
-            int64_t curMax = runner.maxCycleTimeUs.load();
-            if (cycleTime > curMax) runner.maxCycleTimeUs.store(cycleTime);
-
-            // Store historical sample for charting
-            int64_t jitterUs = runner.lastJitterUs.load();
-            storeSample(runner.cycleHistory, runner.cycleHistoryMx, cycleTime, jitterUs);
-        }
+        // Run one sweep over the class members (preCyclic → cyclic → I/O →
+        // postCyclic + per-member/class metrics). Extracted so the native thread
+        // loop and the cooperative tickOnce() driver execute identical logic.
+        sweepClassOnce(runner);
 
         // --- Pause check (for hot-reassignment and stop) ---
         {
