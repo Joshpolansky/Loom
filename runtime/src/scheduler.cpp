@@ -844,18 +844,43 @@ void Scheduler::sweepClassOnce(ClassRunnerState& runner) {
 }
 
 void Scheduler::tickOnce() {
-    // Cooperative single-threaded drive: sweep every class that has members,
-    // once, in place. No spin/sleep/RT policy and no pause handshake (there are
-    // no class threads to coordinate with). Used by hosts that own the loop.
+    // Cooperative single-threaded drive: sweep each class that is DUE, once, in
+    // place. No spin/sleep, no RT policy, no pause handshake (there are no class
+    // threads to coordinate with). Per-class periods are honored against a
+    // steady clock, so a "fast" class runs more often than a "slow" one — capped
+    // by how often the host calls tickOnce() (it can't run faster than that).
+    //
+    // NOTE: only class-based modules are driven here. Isolated-thread and
+    // long-running modules remain threaded-only; a thread-free host (WASM) must
+    // route those into a class or drive them itself.
+    const auto now = std::chrono::steady_clock::now();
+
     for (auto& [name, runnerPtr] : classes_) {
         ClassRunnerState& runner = *runnerPtr;
         if (runner.members.empty()) continue;
+
+        // First sight of this class: anchor its schedule to now (run immediately).
+        if (runner.coopNextDue.time_since_epoch().count() == 0)
+            runner.coopNextDue = now;
+        if (now < runner.coopNextDue) continue;  // not due yet
 
         runner.tickCount.fetch_add(1);
         runner.lastTickStartMs.store(static_cast<int64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count()));
         sweepClassOnce(runner);
+
+        // Advance the deadline by one period. If we've fallen behind (host ticks
+        // slower than this class's period, or the sweep ran long), re-anchor to
+        // the next grid point rather than bursting catch-up cycles — mirrors the
+        // missed-deadline guard in classLoop.
+        const auto periodUs = std::chrono::microseconds(runner.livePeriodUs.load());
+        runner.coopNextDue += periodUs;
+        if (runner.coopNextDue <= now) {
+            const auto behind = std::chrono::duration_cast<std::chrono::microseconds>(
+                now - runner.coopNextDue);
+            runner.coopNextDue += periodUs * (behind / periodUs + 1);
+        }
     }
 }
 

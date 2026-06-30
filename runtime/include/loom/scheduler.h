@@ -254,6 +254,13 @@ private:
         std::atomic<int>      liveCpuAffinity{-1};
         std::atomic<uint64_t> cfgEpoch{0};
 
+        // Cooperative (tickOnce) scheduling only: the next steady-clock deadline
+        // at which this class is due to run. Default (epoch 0) = "not yet
+        // anchored"; tickOnce anchors it on first sight and advances it by the
+        // live period each run, so classes keep independent rates without
+        // threads. Unused by the threaded classLoop path.
+        std::chrono::steady_clock::time_point coopNextDue{};
+
         /// Publish def's tunables to the live atomics and bump the epoch. Call
         /// after mutating def (under the scheduler mutex).
         void publishTunables() {
