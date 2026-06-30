@@ -922,30 +922,7 @@ void Server::start() {
         // =====================================================================
         // GET /api/io-mappings — List all I/O mappings with resolution status
         // =====================================================================
-        CROW_ROUTE(app, "/api/io-mappings")
-        ([this]() {
-            auto& mapper = core_.ioMapper();
-            std::string json = "[";
-            bool first = true;
-            for (size_t i = 0; i < mapper.entryCount(); ++i) {
-                auto* entry = mapper.getMapping(i);
-                if (!entry) continue;
-                if (!first) json += ",";
-                json += "{\"index\":" + std::to_string(i);
-                json += ",\"source\":\"" + (i < mapper.getMappings().size() ? mapper.getMappings()[i].src_module_id : "") + "\"";
-                json += ",\"target\":\"" + (i < mapper.getMappings().size() ? mapper.getMappings()[i].dst_module_id : "") + "\"";
-                json += ",\"enabled\":" + std::string(entry->valid ? "true" : "false");
-                json += ",\"resolved\":" + std::string(entry->valid ? "true" : "false");
-                json += ",\"stable\":" + std::string(entry->stable ? "true" : "false");
-                json += ",\"error\":\"" + entry->error + "\"}";
-                first = false;
-            }
-            json += "]";
-            auto resp = crow::response(200, json);
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
+        // GET /api/io-mappings — migrated to api::dispatch (router.cpp). POST below stays.
 
         // =====================================================================
         // POST /api/io-mappings — Add a new mapping

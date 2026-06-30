@@ -322,6 +322,28 @@ Response dispatch(RuntimeCore& core, const Request& req) {
         return json(200, core.oscilloscope().allDataToJson());
     }
 
+    // GET /api/io-mappings — I/O mappings with resolution status
+    if (req.method == Method::GET && req.path == "/api/io-mappings") {
+        auto& mapper = core.ioMapper();
+        std::string body = "[";
+        bool first = true;
+        for (std::size_t i = 0; i < mapper.entryCount(); ++i) {
+            auto* entry = mapper.getMapping(i);
+            if (!entry) continue;
+            if (!first) body += ",";
+            body += "{\"index\":" + std::to_string(i);
+            body += ",\"source\":\"" + (i < mapper.getMappings().size() ? mapper.getMappings()[i].src_module_id : "") + "\"";
+            body += ",\"target\":\"" + (i < mapper.getMappings().size() ? mapper.getMappings()[i].dst_module_id : "") + "\"";
+            body += ",\"enabled\":" + std::string(entry->valid ? "true" : "false");
+            body += ",\"resolved\":" + std::string(entry->valid ? "true" : "false");
+            body += ",\"stable\":" + std::string(entry->stable ? "true" : "false");
+            body += ",\"error\":\"" + entry->error + "\"}";
+            first = false;
+        }
+        body += "]";
+        return json(200, std::move(body));
+    }
+
     return notFound();
 }
 
