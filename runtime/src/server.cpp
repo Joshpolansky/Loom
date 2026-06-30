@@ -1,4 +1,5 @@
 #include "loom/server.h"
+#include "loom/api/json_build.h"   // shared jsonEscapeString / serializeCycleHistory / moduleInfoJson
 #include "loom/diag/breadcrumb.h"
 #include "loom/diag/fault_store.h"
 
@@ -121,19 +122,8 @@ static ClassInfoDto makeClassInfoDto(const ClassDef& def,
 }
 
 // Escape a raw string for embedding inside a JSON string literal.
-static std::string jsonEscapeString(std::string s) {
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s) {
-        if (c == '\\')      out += "\\\\";
-        else if (c == '"')  out += "\\\"";
-        else if (c == '\n') out += "\\n";
-        else if (c == '\r') out += "\\r";
-        else if (c == '\t') out += "\\t";
-        else                out += c;
-    }
-    return out;
-}
+// jsonEscapeString, serializeCycleHistory and moduleInfoJson now live in
+// loom/api/json_build.h (shared verbatim with the WASM api router).
 
 // Convert DataSection string to enum
 static std::optional<DataSection> parseSectionName(const std::string& name) {
@@ -154,43 +144,7 @@ static glz::error_ctx readJsonPermissive(T& value, std::string_view json) {
     return glz::read<kPermissiveReadOpts>(value, json, ctx);
 }
 
-// Serialize metric history to JSON array.
-// `maxSamples` caps the number of trailing samples emitted (0 = unlimited).
-// The live WS broadcast uses a small cap so we don't ship the entire 2000-sample
-// ring buffer for every module on every tick.
-static std::string serializeCycleHistory(const std::vector<MetricSample>& samples, size_t maxSamples = 0) {
-    std::string json = "[";
-    bool first = true;
-    size_t startIdx = (maxSamples > 0 && samples.size() > maxSamples) ? samples.size() - maxSamples : 0;
-    for (size_t i = startIdx; i < samples.size(); ++i) {
-        const auto& s = samples[i];
-        if (!first) json += ",";
-        json += "{\"t\":" + std::to_string(s.timestampMs)
-            + ",\"cycle\":" + std::to_string(s.cycleTimeUs)
-            + ",\"jitter\":" + std::to_string(s.jitterUs) + "}";
-        first = false;
-    }
-    json += "]";
-    return json;
-}
-
-// Overload for deque (from classHistory accessor)
-static std::string serializeCycleHistory(const std::deque<MetricSample>& samples, size_t maxSamples = 0) {
-    std::string json = "[";
-    bool first = true;
-    size_t startIdx = (maxSamples > 0 && samples.size() > maxSamples) ? samples.size() - maxSamples : 0;
-    size_t i = 0;
-    for (const auto& s : samples) {
-        if (i++ < startIdx) continue;
-        if (!first) json += ",";
-        json += "{\"t\":" + std::to_string(s.timestampMs)
-            + ",\"cycle\":" + std::to_string(s.cycleTimeUs)
-            + ",\"jitter\":" + std::to_string(s.jitterUs) + "}";
-        first = false;
-    }
-    json += "]";
-    return json;
-}
+// serializeCycleHistory (vector + deque overloads) → loom/api/json_build.h
 
 // Build a {"samples":[...],"latest":N} JSON body from raw samples.
 // `since`   : drop samples with t <= since (unbinned) or whose bin start <= since (binned).
@@ -253,53 +207,7 @@ static std::string buildHistoryBody(const std::vector<MetricSample>& samples,
 }
 
 // Build JSON module info for a single module
-static std::string moduleInfoJson(const LoadedModule& mod, const Scheduler& scheduler) {
-    auto* ts = scheduler.taskState(mod.id);
-
-    std::string json = "{";
-    json += "\"id\":\"" + mod.id + "\"";
-    json += ",\"name\":\"" + mod.nameStr + "\"";
-    json += ",\"className\":\"" + mod.className + "\"";
-    json += ",\"version\":\"" + mod.versionStr + "\"";
-    json += ",\"state\":" + std::to_string(static_cast<int>(mod.state));
-    json += ",\"path\":\"" + jsonEscapeString(mod.path.string()) + "\"";
-    if (!mod.sourceFileStr.empty()) {
-        json += ",\"sourceFile\":\"" + jsonEscapeString(mod.sourceFileStr) + "\"";
-    }
-    json += ",\"cyclicClass\":\"" + scheduler.moduleClass(mod.id) + "\"";
-    if (ts) {
-        json += ",\"stats\":{";
-        json += "\"cycleCount\":" + std::to_string(ts->cycleCount.load());
-        json += ",\"overrunCount\":" + std::to_string(ts->overrunCount.load());
-        json += ",\"lastCycleTimeUs\":" + std::to_string(ts->lastCycleTimeUs.load());
-        json += ",\"maxCycleTimeUs\":" + std::to_string(ts->maxCycleTimeUs.load());
-        json += ",\"lastJitterUs\":" + std::to_string(ts->lastJitterUs.load());
-
-        // Last-fault diagnostics (faulted modules are skipped by the scheduler).
-        // Acquire-load `faulted` and read the last-fault fields only when set:
-        // this pairs with the release store in Scheduler::recordModuleFault so we
-        // never read a half-written lastFaultMsg (see scheduler.h).
-        const bool faulted = ts->faulted.load(std::memory_order_acquire);
-        json += ",\"faulted\":" + std::string(faulted ? "true" : "false");
-        if (faulted) {
-            json += ",\"lastFaultMs\":" + std::to_string(ts->lastFaultMs.load());
-            json += ",\"lastFaultPhase\":\"" +
-                    std::string(diag::phaseName(static_cast<diag::Phase>(ts->lastFaultPhase.load()))) + "\"";
-            json += ",\"lastFaultMsg\":\"" + jsonEscapeString(ts->lastFaultMsg) + "\"";
-        }
-
-        // Add cycle history
-        {
-            std::lock_guard lk(ts->cycleHistoryMx);
-            auto histVec = ts->cycleHistory.getAll();
-            json += ",\"cycleHistory\":" + serializeCycleHistory(histVec);
-        }
-
-        json += "}";
-    }
-    json += "}";
-    return json;
-}
+// moduleInfoJson → loom/api/json_build.h (shared with the WASM api router)
 
 Server::Server(RuntimeCore& core, const ServerConfig& config)
     : core_(core), config_(config) {}

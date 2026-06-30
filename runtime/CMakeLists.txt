@@ -39,6 +39,7 @@ add_library(loom_core STATIC
     src/io_mapper.cpp
     src/oscilloscope.cpp
     src/module_watcher.cpp
+    src/api/router.cpp
     src/diag/breadcrumb.cpp
     src/diag/fault_report.cpp
     src/diag/fault_store.cpp

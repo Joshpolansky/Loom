@@ -11,6 +11,7 @@
 #ifdef __EMSCRIPTEN__
 
 #include "loom/runtime_core.h"
+#include "loom/api/router.h"
 #include "loom/types.h"
 
 #include <spdlog/spdlog.h>
@@ -71,6 +72,21 @@ char* loom_module_ids() {
     std::string s;
     for (std::size_t i = 0; i < g_ids.size(); ++i) { if (i) s += ','; s += g_ids[i]; }
     return dupString(s);
+}
+
+// Route a REST request (method, path, body) through the same transport-agnostic
+// dispatcher the native HTTP server uses. Returns the response body as a malloc'd
+// C string (caller free()s); the JS service intercepts fetch('/api/*') and calls
+// this. (Status code wiring comes with the React service; body is enough here.)
+EMSCRIPTEN_KEEPALIVE
+char* loom_request(const char* method, const char* path, const char* body) {
+    if (!g_core) return nullptr;
+    loom::api::Request req;
+    req.method = loom::api::methodFromString(method ? method : "GET");
+    req.path   = path ? path : "";
+    req.body   = body ? body : "";
+    loom::api::Response resp = loom::api::dispatch(*g_core, req);
+    return dupString(resp.body);
 }
 
 // Reflected runtime state of one module instance, as a JSON string. Returns a
