@@ -21,9 +21,11 @@
 #include <exception>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace {
 std::unique_ptr<loom::RuntimeCore> g_core;
+std::vector<std::string>           g_ids;   // ids of modules loaded by loom_init
 
 // Copy a std::string into a malloc'd C buffer the JS side reads then free()s.
 char* dupString(const std::string& s) {
@@ -47,9 +49,9 @@ int loom_init(const char* moduleDir, const char* dataDir) {
         cfg.dataDir     = dataDir   ? dataDir   : "/data";
         cfg.cooperative = true;   // no class threads, no file watcher
         g_core = std::make_unique<loom::RuntimeCore>(cfg);
-        auto ids = g_core->loadModules();
-        spdlog::info("loom_init: {} module(s) loaded", ids.size());
-        return static_cast<int>(ids.size());
+        g_ids = g_core->loadModules();
+        spdlog::info("loom_init: {} module(s) loaded", g_ids.size());
+        return static_cast<int>(g_ids.size());
     } catch (const std::exception& e) {
         spdlog::error("loom_init failed: {}", e.what());
         g_core.reset();
@@ -61,6 +63,14 @@ int loom_init(const char* moduleDir, const char* dataDir) {
 EMSCRIPTEN_KEEPALIVE
 void loom_tick() {
     if (g_core) g_core->scheduler().tickOnce();
+}
+
+// Comma-separated ids of the modules loaded by loom_init. malloc'd; caller free()s.
+EMSCRIPTEN_KEEPALIVE
+char* loom_module_ids() {
+    std::string s;
+    for (std::size_t i = 0; i < g_ids.size(); ++i) { if (i) s += ','; s += g_ids[i]; }
+    return dupString(s);
 }
 
 // Reflected runtime state of one module instance, as a JSON string. Returns a

@@ -288,6 +288,7 @@ bool Scheduler::start(LoadedModule& mod, const TaskConfig& config, const InitCon
 
     // Start long-running thread immediately (independent of class membership).
     if (config.enableLongRunning) {
+#ifndef __EMSCRIPTEN__   // wasm has no threads; background long-running work is skipped
         statePtr->longRunningThread = std::thread([this, &mod, statePtr]() {
             spdlog::info("Long-running task started for '{}'", mod.id);
             while (statePtr->running.load()) {
@@ -321,14 +322,23 @@ bool Scheduler::start(LoadedModule& mod, const TaskConfig& config, const InitCon
             }
             spdlog::info("Long-running task ended for '{}'", mod.id);
         });
+#endif // __EMSCRIPTEN__
     }
 
     const bool isIsolated = config.isolateThread || config.cyclicClass.empty();
 
     if (isIsolated) {
+#ifndef __EMSCRIPTEN__
         statePtr->cyclicThread = std::thread([this, &mod, config, statePtr]() {
             isolatedLoop(mod, config, *statePtr);
         });
+#else
+        // No threads in wasm: drive an "isolated" module cooperatively by adding
+        // it to a class so tickOnce() sweeps it (its dedicated period collapses
+        // to that class's period).
+        auto& corunner = getOrCreateClass(config.cyclicClass.empty() ? "normal" : config.cyclicClass);
+        insertMember(corunner, { mod.id, config.order, &mod, statePtr });
+#endif
     } else {
         // Add to class (thread started later by startClasses, or live-inserted if running).
         auto& runner = getOrCreateClass(config.cyclicClass);
@@ -349,9 +359,11 @@ void Scheduler::startClasses() {
         if (runner->members.empty() || runner->running.load()) continue;
 
         runner->running.store(true);
+#ifndef __EMSCRIPTEN__   // wasm drives classes cooperatively via tickOnce(), no threads
         runner->thread = std::thread([this, r = runner.get()]() {
             classLoop(*r);
         });
+#endif
         spdlog::info("Class '{}' started (period: {}µs, members: {})",
                      runner->def.name, runner->def.period_us,
                      static_cast<int>(runner->members.size()));
