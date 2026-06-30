@@ -79,6 +79,23 @@ target_link_options(loom_host_wasm PRIVATE
     "-sENVIRONMENT=web,worker,node"
     "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS']")
 
+# Stage the host straight into the frontend's static assets on every build, so
+# `cmake --build` alone is enough — no manual cp. Mirrors link_frontend_ui below
+# (native build symlinks data/UI -> frontend/dist for the same reason).
+if(EXISTS "${CMAKE_SOURCE_DIR}/frontend")
+    add_custom_command(TARGET loom_host_wasm POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/frontend/public"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:loom_host_wasm>"
+            "${CMAKE_SOURCE_DIR}/frontend/public/"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE_DIR:loom_host_wasm>/loom_wasm.wasm"
+            "${CMAKE_SOURCE_DIR}/frontend/public/"
+        COMMENT "Staging loom_wasm.js/.wasm into frontend/public/"
+        VERBATIM
+    )
+endif()
+
 else() # ---- native host ----------------------------------------------------
 
 # ---------------------------------------------------------------------------

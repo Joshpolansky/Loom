@@ -24,14 +24,36 @@ add_subdirectory(sequencer)
 add_subdirectory(stack_light)
 
 if(EMSCRIPTEN)
+    set(LOOM_WASM_MODULE_TARGETS class_based command_probe crasher example_motor
+                                  oscilloscope pneumatic_actuator sequencer stack_light)
+
     # Each module above is `add_library(<name> MODULE ...)`; under Emscripten a
     # MODULE library needs -sSIDE_MODULE=1 (compile and link) to produce a
     # dlopen-able wasm side module instead of a native-style shared object.
-    foreach(_mod IN ITEMS class_based command_probe crasher example_motor
-                          oscilloscope pneumatic_actuator sequencer stack_light)
+    foreach(_mod IN LISTS LOOM_WASM_MODULE_TARGETS)
         target_compile_options(${_mod} PRIVATE -sSIDE_MODULE=1)
         target_link_options(${_mod} PRIVATE -sSIDE_MODULE=1)
     endforeach()
+
+    # Stage straight into the frontend's static assets on every build — `cmake
+    # --build` alone is then enough, no manual cp. A plain add_custom_target (not
+    # add_custom_command(TARGET ... POST_BUILD)) because POST_BUILD must be added
+    # in the same directory that created the target; each module target above was
+    # created in its own add_subdirectory(), not here.
+    if(EXISTS "${CMAKE_SOURCE_DIR}/frontend")
+        set(_wasm_module_files "")
+        foreach(_mod IN LISTS LOOM_WASM_MODULE_TARGETS)
+            list(APPEND _wasm_module_files "$<TARGET_FILE:${_mod}>")
+        endforeach()
+        add_custom_target(stage_wasm_modules ALL
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/frontend/public"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_wasm_module_files}
+                "${CMAKE_SOURCE_DIR}/frontend/public/"
+            DEPENDS ${LOOM_WASM_MODULE_TARGETS}
+            COMMENT "Staging wasm modules into frontend/public/"
+            VERBATIM
+        )
+    endif()
 endif()
 
 # Debug info for these modules comes from the global flags in the root
