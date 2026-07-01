@@ -7,9 +7,15 @@
 //   (default) → the real OPC-UA machine talking to a native runtime server.
 //
 // main.tsx awaits this before first render and hands the result to MachineProvider.
+//
+// createLoomRuntime/WasmMachine now live in packages/loom-wasm (the
+// npm-publishable package other consumers install) -- imported here by
+// relative path rather than via node_modules/workspaces, since this repo
+// intentionally has no workspace tooling (one new package doesn't justify a
+// monorepo migration). This IS loom's own frontend dogfooding that package.
 // @ts-expect-error — plain-JS runtime service (see loomRuntime.js)
-import { createLoomRuntime } from './loomRuntime.js';
-import { WasmMachine } from './WasmMachine';
+import { createLoomRuntime } from '../../../packages/loom-wasm/src/loomRuntime.js';
+import { WasmMachine } from '../../../packages/loom-wasm/src/WasmMachine';
 import { isWasmMode } from './wasmMode';
 
 function loadScript(src: string): Promise<void> {

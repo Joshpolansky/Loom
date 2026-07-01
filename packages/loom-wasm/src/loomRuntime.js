@@ -117,6 +117,7 @@ export async function createLoomRuntime({ createModule, tickMs = 25, beforeInit 
 export async function bootFromDataDir({ createModule, dataUrl, moduleUrl, tickMs = 25 } = {}) {
   if (!dataUrl || !moduleUrl) throw new Error('bootFromDataDir: dataUrl and moduleUrl are required');
   const skipped = [];
+  let manifestIds = [];
 
   async function fetchOk(url) {
     try {
@@ -143,6 +144,7 @@ export async function bootFromDataDir({ createModule, dataUrl, moduleUrl, tickMs
     try { entries = JSON.parse(manifestText); } catch (e) {
       console.warn('bootFromDataDir: instances.json did not parse as JSON', e);
     }
+    manifestIds = entries.map((e) => e && e.id).filter(Boolean);
 
     const schedResp = await fetchOk(`${dataUrl}/scheduler.json`);
     if (schedResp) M.FS.writeFile('/data/scheduler.json', await schedResp.text());
@@ -170,5 +172,23 @@ export async function bootFromDataDir({ createModule, dataUrl, moduleUrl, tickMs
   };
 
   const rt = await createLoomRuntime({ createModule, tickMs, beforeInit });
+
+  // A manifest id whose .so fetched fine (so it's not already in `skipped`)
+  // but never ended up registered was rejected inside loom_init() itself --
+  // most likely an SDK/ABI version mismatch (see runtime/src/module_loader.cpp,
+  // which refuses to load a module built against a different SDK version and
+  // logs a clear error, but has no per-module JS-visible return value at this
+  // boot stage). Fold it into `skipped` too, distinct from a 404, so a
+  // consumer doesn't silently end up with fewer live modules than
+  // instances.json listed with no visible signal.
+  const loadedIds = new Set(rt.moduleIds());
+  for (const id of manifestIds) {
+    if (!skipped.includes(id) && !loadedIds.has(id)) {
+      console.warn(`bootFromDataDir: '${id}' fetched but did not load (likely SDK/ABI version ` +
+                   `mismatch -- check the console above for a "SDK version mismatch" error)`);
+      skipped.push(id);
+    }
+  }
+
   return { ...rt, skipped };
 }

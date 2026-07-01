@@ -1,0 +1,7 @@
+dist/
+wasm/*.js
+wasm/*.wasm
+wasm/demo-modules/*.so
+node_modules/
+*.tgz
+*.tsbuildinfo
