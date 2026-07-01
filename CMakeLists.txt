@@ -84,8 +84,8 @@ endif()
 
 # Dependencies — all from Conan, native and wasm alike (same pinned versions, no
 # drift). glaze + spdlog are shared. The native host also needs Crow (HTTP/WS),
-# cpptrace (crash symbolization) and GTest; the WASM build is thread-free and
-# server-less and skips them (gated in conanfile.py via settings.os).
+# cpptrace (crash symbolization) and GTest; the WASM build is server-less and
+# skips them (gated in conanfile.py via settings.os).
 find_package(glaze REQUIRED)
 find_package(spdlog REQUIRED)
 if(EMSCRIPTEN)
@@ -98,6 +98,19 @@ if(EMSCRIPTEN)
     add_compile_definitions(FMT_CONSTEVAL=)
     add_compile_options(-fexceptions)
     add_link_options(-fexceptions)
+
+    # Real threading (SharedArrayBuffer + Worker-backed std::thread), applied
+    # globally so loom_core, loom_host_wasm, AND every bundled module (dlopen'd
+    # SIDE_MODULEs) agree on the threaded object format -- a SIDE_MODULE built
+    # without -pthread loaded into a -pthread MAIN_MODULE is not a supported
+    # combination. De-risked standalone in spike/phaseC-pthread-dlopen/ (real
+    # worker thread driving dlopen'd module code, incl. a pauseClass()-style
+    # mutex+condvar handshake and cross-thread C++ exceptions -- all passed).
+    # Emscripten itself flags dynamic-linking+pthreads as experimental
+    # (-Wexperimental); this is the reason to keep an eye on it going forward,
+    # not a reason it's broken today.
+    add_compile_options(-pthread)
+    add_link_options(-pthread)
 
     # CMake's Emscripten platform defaults TARGET_SUPPORTS_SHARED_LIBS to FALSE,
     # so add_library(MODULE) (used by every bundled module — modules/*/CMakeLists.txt)

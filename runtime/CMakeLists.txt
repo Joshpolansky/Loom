@@ -64,8 +64,11 @@ if(EMSCRIPTEN)
 
 # ---------------------------------------------------------------------------
 # loom_host_wasm — WASM host: run_wasm.cpp + loom_core built as a MAIN_MODULE so
-# module plugins can be dlopen'd at runtime. No Crow / cpptrace / signals; driven
-# from JavaScript via Scheduler::tickOnce(). Emits loom_wasm.js + loom_wasm.wasm.
+# module plugins can be dlopen'd at runtime. No Crow / cpptrace / signals. Real
+# pthreads: startClasses() spawns actual Worker-backed class threads (same code
+# path as native), so cyclic() timing/pacing/pause-handshake work unmodified --
+# no Scheduler::tickOnce() involved (see run_wasm.cpp's loom_init/loom_tick).
+# Emits loom_wasm.js + loom_wasm.wasm.
 # ---------------------------------------------------------------------------
 add_executable(loom_host_wasm src/run_wasm.cpp)
 target_compile_definitions(loom_host_wasm PRIVATE LOOM_BUILD_TYPE="$<CONFIG>")
@@ -77,7 +80,12 @@ target_link_options(loom_host_wasm PRIVATE
     "-sMODULARIZE=1"
     "-sEXPORT_NAME=createLoomModule"
     "-sENVIRONMENT=web,worker,node"
-    "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS']")
+    "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS']"
+    # Pre-warm a worker pool: the 3 built-in classes (fast/normal/slow) plus a
+    # spare for an isolated-thread or long-running module. Emscripten can grow
+    # beyond this on demand, but that path is less exercised -- size for the
+    # common case rather than relying on it.
+    "-sPTHREAD_POOL_SIZE=4")
 
 # Stage the host straight into the frontend's static assets on every build, so
 # `cmake --build` alone is enough — no manual cp. Mirrors link_frontend_ui below
