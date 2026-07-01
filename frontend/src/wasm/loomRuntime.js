@@ -11,8 +11,12 @@
  * @param {object} opts
  * @param {() => Promise<any>} opts.createModule  Emscripten factory (createLoomModule).
  * @param {number} [opts.tickMs=25]               Cooperative tick cadence.
+ * @param {(M: any) => Promise<void>} [opts.beforeInit]  Called after the wasm
+ *   Module is ready and /modules, /data, /uploads exist in MEMFS, but BEFORE
+ *   loom_init() runs -- the hook point for seeding instances.json/scheduler.json/
+ *   module .so files/config.json into MEMFS ahead of boot (see bootFromDataDir).
  */
-export async function createLoomRuntime({ createModule, tickMs = 25 } = {}) {
+export async function createLoomRuntime({ createModule, tickMs = 25, beforeInit } = {}) {
   if (!createModule) throw new Error('createLoomRuntime: createModule (the Emscripten factory) is required');
   const M = await createModule();
   for (const d of ['/modules', '/data', '/uploads']) { try { M.FS.mkdir(d); } catch (e) {} }
@@ -27,6 +31,7 @@ export async function createLoomRuntime({ createModule, tickMs = 25 } = {}) {
     writeNode:  M.cwrap('loom_write_node', 'number', ['string', 'string']),
   };
 
+  if (beforeInit) await beforeInit(M);
   c.init('/modules', '/data');
   let timer = setInterval(() => c.tick(), tickMs);
 
@@ -84,4 +89,86 @@ export async function createLoomRuntime({ createModule, tickMs = 25 } = {}) {
   function stop() { if (timer) { clearInterval(timer); timer = null; } }
 
   return { Module: M, request, loadModule, moduleIds, readNode, writeNode, makeFetch, installFetch, stop };
+}
+
+/**
+ * Boot the runtime the way native `loom --module-dir <dir> --data-dir <dir>`
+ * does: read <dataUrl>/instances.json (the SAME manifest format native reads
+ * from disk -- [{id, so, className}, ...]) to learn which modules to load,
+ * fetch each one's .so from <moduleUrl>/, and fetch each instance's persisted
+ * config.json + the shared scheduler.json from <dataUrl>/, seeding all of it
+ * into MEMFS before loom_init() runs. RuntimeCore::loadModules()'s existing
+ * native "boot from instances.json" code path does everything else -- this
+ * function's only job is turning "files on a real dataDir/moduleDir" into
+ * "the same files fetched over HTTP and written into MEMFS first".
+ *
+ * A module named in instances.json but not found at <moduleUrl>/<so>.so
+ * (e.g. it was never built for wasm) is skipped with a warning, matching
+ * native's resolveModulePath() behavior -- the rest of the boot proceeds.
+ *
+ * @param {object} opts
+ * @param {() => Promise<any>} opts.createModule  Emscripten factory (createLoomModule).
+ * @param {string} opts.dataUrl    Base URL serving the real dataDir's contents
+ *   (instances.json, scheduler.json, <id>/config.json, ...) read-only.
+ * @param {string} opts.moduleUrl  Base URL serving the real moduleDir's .so files.
+ * @param {number} [opts.tickMs=25]
+ * @returns {Promise<ReturnType<typeof createLoomRuntime> & {skipped: string[]}>}
+ */
+export async function bootFromDataDir({ createModule, dataUrl, moduleUrl, tickMs = 25 } = {}) {
+  if (!dataUrl || !moduleUrl) throw new Error('bootFromDataDir: dataUrl and moduleUrl are required');
+  const skipped = [];
+
+  async function fetchOk(url) {
+    try {
+      // no-store: native boot reads whatever's on disk right now, with no
+      // caching layer -- a browser HTTP cache serving a stale build after a
+      // module gets rebuilt (or removed) would silently defeat that.
+      const r = await fetch(url, { cache: 'no-store' });
+      return r.ok ? r : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  const beforeInit = async (M) => {
+    const manifestResp = await fetchOk(`${dataUrl}/instances.json`);
+    if (!manifestResp) {
+      console.warn(`bootFromDataDir: no instances.json at ${dataUrl} -- booting with zero modules`);
+      return;
+    }
+    const manifestText = await manifestResp.text();
+    M.FS.writeFile('/data/instances.json', manifestText);
+
+    let entries = [];
+    try { entries = JSON.parse(manifestText); } catch (e) {
+      console.warn('bootFromDataDir: instances.json did not parse as JSON', e);
+    }
+
+    const schedResp = await fetchOk(`${dataUrl}/scheduler.json`);
+    if (schedResp) M.FS.writeFile('/data/scheduler.json', await schedResp.text());
+
+    for (const entry of entries) {
+      const { id, so } = entry;
+      if (!id || !so) continue;
+
+      const soResp = await fetchOk(`${moduleUrl}/${so}.so`);
+      if (!soResp) {
+        console.warn(`bootFromDataDir: '${id}' (${so}.so) not found at ${moduleUrl} -- skipping ` +
+                     `(likely not built for wasm; native-only modules are expected to be absent here)`);
+        skipped.push(id);
+        continue;
+      }
+      const bytes = new Uint8Array(await soResp.arrayBuffer());
+      M.FS.writeFile(`/modules/${so}.so`, bytes);
+
+      const cfgResp = await fetchOk(`${dataUrl}/${id}/config.json`);
+      if (cfgResp) {
+        try { M.FS.mkdir(`/data/${id}`); } catch (e) {}
+        M.FS.writeFile(`/data/${id}/config.json`, await cfgResp.text());
+      }
+    }
+  };
+
+  const rt = await createLoomRuntime({ createModule, tickMs, beforeInit });
+  return { ...rt, skipped };
 }
