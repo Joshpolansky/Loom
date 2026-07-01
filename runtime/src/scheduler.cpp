@@ -3,6 +3,7 @@
 #include "loom/io_mapper.h"
 #include "loom/diag/guard.h"
 #include "loom/diag/fault_sink.h"
+#include "loom/thread_support.h"
 
 #include <spdlog/spdlog.h>
 
@@ -288,6 +289,7 @@ bool Scheduler::start(LoadedModule& mod, const TaskConfig& config, const InitCon
 
     // Start long-running thread immediately (independent of class membership).
     if (config.enableLongRunning) {
+#if LOOM_HAS_THREADS
         statePtr->longRunningThread = std::thread([this, &mod, statePtr]() {
             spdlog::info("Long-running task started for '{}'", mod.id);
             while (statePtr->running.load()) {
@@ -321,14 +323,23 @@ bool Scheduler::start(LoadedModule& mod, const TaskConfig& config, const InitCon
             }
             spdlog::info("Long-running task ended for '{}'", mod.id);
         });
+#endif // LOOM_HAS_THREADS
     }
 
     const bool isIsolated = config.isolateThread || config.cyclicClass.empty();
 
     if (isIsolated) {
+#if LOOM_HAS_THREADS
         statePtr->cyclicThread = std::thread([this, &mod, config, statePtr]() {
             isolatedLoop(mod, config, *statePtr);
         });
+#else
+        // No real threads in this build: drive an "isolated" module
+        // cooperatively by adding it to a class so tickOnce() sweeps it (its
+        // dedicated period collapses to that class's period).
+        auto& corunner = getOrCreateClass(config.cyclicClass.empty() ? "normal" : config.cyclicClass);
+        insertMember(corunner, { mod.id, config.order, &mod, statePtr });
+#endif
     } else {
         // Add to class (thread started later by startClasses, or live-inserted if running).
         auto& runner = getOrCreateClass(config.cyclicClass);
@@ -349,9 +360,11 @@ void Scheduler::startClasses() {
         if (runner->members.empty() || runner->running.load()) continue;
 
         runner->running.store(true);
+#if LOOM_HAS_THREADS
         runner->thread = std::thread([this, r = runner.get()]() {
             classLoop(*r);
         });
+#endif
         spdlog::info("Class '{}' started (period: {}µs, members: {})",
                      runner->def.name, runner->def.period_us,
                      static_cast<int>(runner->members.size()));
@@ -710,6 +723,7 @@ void Scheduler::sortMembers(ClassRunnerState& runner) {
 }
 
 void Scheduler::pauseClass(ClassRunnerState& runner) {
+#if LOOM_HAS_THREADS
     if (!runner.running.load()) return;
 
     {
@@ -719,21 +733,37 @@ void Scheduler::pauseClass(ClassRunnerState& runner) {
     }
 
     // Wait for the class thread to finish its current tick and ack the pause.
-    // Real threads under Emscripten too now (see spike/phaseC-pthread-dlopen/,
-    // which proved this exact mutex+condvar handshake against a worker thread
-    // calling into a dlopen'd module).
+    // Real threads under Emscripten too when built with -pthread (see
+    // spike/phaseC-pthread-dlopen/, which proved this exact mutex+condvar
+    // handshake against a worker thread calling into a dlopen'd module).
     std::unique_lock lk(runner.pauseMx);
     runner.pauseCv.wait(lk, [&] {
         return runner.pauseAcked || !runner.running.load();
     });
+#else
+    // No-op: this build has no class thread (classLoop() is never spawned —
+    // see startClasses()/insertMember's #if LOOM_HAS_THREADS guards), so there
+    // is nothing to pause and nothing that will ever ack. Waiting here would
+    // deadlock forever: insertMember() calls this for every module after the
+    // first one joining an already-"running" (per the flag, not actually
+    // threaded) class, and removeMember() calls it on reload/reassign. The
+    // cooperative tick loop can't run concurrently with this synchronous call
+    // anyway (single JS thread), so the caller's subsequent runner.members
+    // mutation is already safe.
+    (void)runner;
+#endif
 }
 
 void Scheduler::unpauseClass(ClassRunnerState& runner) {
+#if LOOM_HAS_THREADS
     {
         std::lock_guard lk(runner.pauseMx);
         runner.pauseRequested = false;
     }
     runner.pauseCv.notify_all();
+#else
+    (void)runner;  // no-op to match pauseClass(); see its comment.
+#endif
 }
 
 // ---- Metrics buffering ----------------------------------------------------------
