@@ -83,10 +83,17 @@ configure_package_config_file(
     INSTALL_DESTINATION ${CONFIG_INSTALL_DIR}
 )
 
+# ARCH_INDEPENDENT: the SDK is a header-only INTERFACE library (no compiled
+# binaries), so it's genuinely usable from any target architecture/pointer
+# width. Without this, find_package(loom CONFIG)'s default compatibility
+# check compares CMAKE_SIZEOF_VOID_P against the arch this was installed
+# from, silently rejecting the package for any cross-compile (e.g. wasm32)
+# consumer even though nothing here actually depends on pointer size.
 write_basic_package_version_file(
     ${CMAKE_CURRENT_BINARY_DIR}/loomConfigVersion.cmake
     VERSION ${LOOM_SDK_VERSION}
     COMPATIBILITY AnyNewerVersion
+    ARCH_INDEPENDENT
 )
 
 install(FILES
