@@ -882,7 +882,16 @@ void Scheduler::tickOnce() {
     // NOTE: only class-based modules are driven here. Isolated-thread and
     // long-running modules remain threaded-only; a thread-free host (WASM) must
     // route those into a class or drive them itself.
-    const auto now = std::chrono::steady_clock::now();
+    //
+    // `loopStart` is a single consistent snapshot used for the due-check below,
+    // so every class in this call is judged against the same instant regardless
+    // of how long earlier classes' sweeps took. The missed-deadline reanchor
+    // after sweepClassOnce(), however, samples the clock FRESH (see `afterSweep`)
+    // — using the stale `loopStart` there would under-detect a sweep that ran
+    // long, letting the class come due again immediately on the next tickOnce()
+    // call instead of re-anchoring to the period grid. Mirrors classLoop, which
+    // also samples `now` fresh after each tick's work for the same check.
+    const auto loopStart = std::chrono::steady_clock::now();
 
     for (auto& [name, runnerPtr] : classes_) {
         ClassRunnerState& runner = *runnerPtr;
@@ -890,8 +899,8 @@ void Scheduler::tickOnce() {
 
         // First sight of this class: anchor its schedule to now (run immediately).
         if (runner.coopNextDue.time_since_epoch().count() == 0)
-            runner.coopNextDue = now;
-        if (now < runner.coopNextDue) continue;  // not due yet
+            runner.coopNextDue = loopStart;
+        if (loopStart < runner.coopNextDue) continue;  // not due yet
 
         runner.tickCount.fetch_add(1);
         runner.lastTickStartMs.store(static_cast<int64_t>(
@@ -903,11 +912,12 @@ void Scheduler::tickOnce() {
         // slower than this class's period, or the sweep ran long), re-anchor to
         // the next grid point rather than bursting catch-up cycles — mirrors the
         // missed-deadline guard in classLoop.
-        const auto periodUs = std::chrono::microseconds(runner.livePeriodUs.load());
+        const auto afterSweep = std::chrono::steady_clock::now();
+        const auto periodUs   = std::chrono::microseconds(runner.livePeriodUs.load());
         runner.coopNextDue += periodUs;
-        if (runner.coopNextDue <= now) {
+        if (runner.coopNextDue <= afterSweep) {
             const auto behind = std::chrono::duration_cast<std::chrono::microseconds>(
-                now - runner.coopNextDue);
+                afterSweep - runner.coopNextDue);
             runner.coopNextDue += periodUs * (behind / periodUs + 1);
         }
     }
@@ -949,7 +959,6 @@ void Scheduler::classLoop(ClassRunnerState& runner) {
     applyPolicy();
 
     auto periodUs       = std::chrono::microseconds(runner.livePeriodUs.load());
-    auto periodNs       = static_cast<int64_t>(runner.livePeriodUs.load()) * 1000LL;
     auto kSpinThreshold = std::chrono::microseconds(runner.liveSpinUs.load());
 
     spdlog::info("Class '{}' thread started (period: {}µs, priority: {})",
@@ -960,7 +969,6 @@ void Scheduler::classLoop(ClassRunnerState& runner) {
     while (runner.running.load()) {
         // --- Pick up live tunable changes (no restart needed) ---
         periodUs       = std::chrono::microseconds(runner.livePeriodUs.load());
-        periodNs       = static_cast<int64_t>(runner.livePeriodUs.load()) * 1000LL;
         kSpinThreshold = std::chrono::microseconds(runner.liveSpinUs.load());
         if (uint64_t ep = runner.cfgEpoch.load(std::memory_order_acquire); ep != seenEpoch) {
             seenEpoch = ep;
