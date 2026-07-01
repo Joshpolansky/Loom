@@ -153,12 +153,17 @@ public:
     /// (tracked against a steady clock, independently per class — see
     /// ClassRunnerState::coopNextDue) gets one sweep of its members (preCyclic →
     /// cyclic → I/O map → postCyclic), in place on the calling thread. No class
-    /// threads spawned, no sleeping, no RT thread policy. For single-threaded
-    /// hosts (e.g. the WASM build) that drive the runtime from an external loop
-    /// instead of startClasses(). Periods ARE enforced (a "fast" class still runs
-    /// more often than a "slow" one, capped by call frequency); priority/affinity
-    /// are NOT — they require an OS thread, which cooperative mode doesn't have.
-    /// Do NOT mix with startClasses() on the same instance.
+    /// threads spawned, no sleeping, no RT thread policy. For hosts running in
+    /// cooperative mode (RuntimeConfig::cooperative; forced true when
+    /// !LOOM_HAS_THREADS, optional otherwise — see thread_support.h) that drive
+    /// the runtime from an external loop instead of startClasses(). Periods ARE
+    /// enforced (a "fast" class still runs more often than a "slow" one, capped
+    /// by call frequency); priority/affinity are NOT — they require an OS
+    /// thread, which cooperative mode doesn't have. Do NOT mix with
+    /// startClasses() on the same instance — RuntimeCore enforces this
+    /// (every startClasses() call site is gated on !cooperative), so as long
+    /// as callers go through RuntimeCore rather than a bare Scheduler this
+    /// can't happen. Takes the scheduler mutex for the duration of the call.
     void tickOnce();
 
     /// Configure optional targets for cycle-aligned sampling.

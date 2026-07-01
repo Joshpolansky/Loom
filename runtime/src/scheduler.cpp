@@ -895,6 +895,20 @@ void Scheduler::tickOnce() {
     // long, letting the class come due again immediately on the next tickOnce()
     // call instead of re-anchoring to the period grid. Mirrors classLoop, which
     // also samples `now` fresh after each tick's work for the same check.
+    //
+    // mutex_ held for the whole call: classLoop()'s hot path deliberately does
+    // NOT hold it (relies on the pause handshake instead, to stay real-time
+    // tight), but tickOnce() isn't a real-time hot path -- it's the cooperative
+    // driver -- so the coarser lock is an acceptable trade for correctness.
+    // RuntimeCore guarantees no classLoop() thread coexists with a cooperative
+    // instance (every startClasses() call site is gated on !cooperative), so
+    // this is defense-in-depth against a caller invoking tickOnce() and a
+    // structural Scheduler method (start/stop/updateClassDef/...) from two
+    // different OS threads concurrently -- newly plausible now that the wasm
+    // host can be built with real pthreads (see thread_support.h), even though
+    // nothing in the current host actually does this.
+    std::lock_guard lock(mutex_);
+
     const auto loopStart = std::chrono::steady_clock::now();
 
     for (auto& [name, runnerPtr] : classes_) {
