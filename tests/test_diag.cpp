@@ -190,3 +190,52 @@ TEST(DiagFaultStore, JsonSupersedesRawTxtSibling) {
 
     std::filesystem::remove_all(dir);
 }
+
+// Retention cap: the store keeps only the newest kMaxEntries faults, in memory
+// AND on disk — an over-full crash dir is trimmed at construction, and record()
+// evicts the oldest entry (deleting its report file) once at the cap.
+TEST(DiagFaultStore, RetentionCapPrunesMemoryAndDisk) {
+    auto dir = std::filesystem::temp_directory_path() /
+               ("loom_faults_cap_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    // Seed cap+50 structured reports on disk, ids ordered by timestamp.
+    const std::size_t seeded = FaultStore::kMaxEntries + 50;
+    auto idFor = [](std::size_t i) {
+        char buf[16];
+        std::snprintf(buf, sizeof buf, "fault-%04zu", i);
+        return std::string(buf);
+    };
+    for (std::size_t i = 0; i < seeded; ++i) {
+        std::ofstream f(dir / (idFor(i) + ".json"), std::ios::binary);
+        f << R"({"ts":)" << (1000 + i) << R"(,"kind":"exception","reason":"synthetic"})";
+    }
+
+    // Construction trims to the cap: newest kept, oldest gone, disk pruned.
+    FaultStore store(dir);
+    auto list = store.list();  // newest first
+    ASSERT_EQ(list.size(), FaultStore::kMaxEntries);
+    EXPECT_EQ(list.front().id, idFor(seeded - 1));
+    EXPECT_EQ(list.back().id,  idFor(seeded - FaultStore::kMaxEntries));
+    std::size_t onDisk = 0;
+    for (const auto& de : std::filesystem::directory_iterator(dir))
+        if (de.is_regular_file()) ++onDisk;
+    EXPECT_EQ(onDisk, FaultStore::kMaxEntries);
+    EXPECT_FALSE(std::filesystem::exists(dir / (idFor(0) + ".json")));
+
+    // record() at the cap evicts exactly the oldest (memory + its file).
+    const std::string evicted = list.back().id;
+    FaultReport r = sampleReport();
+    r.id   = "newest-recorded";
+    r.tsMs = 999999;
+    store.record(r);
+    list = store.list();
+    ASSERT_EQ(list.size(), FaultStore::kMaxEntries);
+    EXPECT_EQ(list.front().id, "newest-recorded");
+    EXPECT_NE(list.back().id, evicted);
+    EXPECT_FALSE(std::filesystem::exists(dir / (evicted + ".json")));
+    EXPECT_TRUE(std::filesystem::exists(dir / "newest-recorded.json"));
+
+    std::filesystem::remove_all(dir);
+}

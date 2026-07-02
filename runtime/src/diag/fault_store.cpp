@@ -109,13 +109,17 @@ void FaultStore::scanDir() {
 }
 
 void FaultStore::enforceCap() {
-    while (entries_.size() > kMaxEntries) {
-        const auto& oldest = entries_.front();
+    if (entries_.size() <= kMaxEntries) return;
+    // Erase the excess as one front range (not one erase(begin()) per entry,
+    // which is O(n^2) shifting — noticeable at boot after a fault loop left
+    // thousands of reports behind).
+    const auto excess = static_cast<std::ptrdiff_t>(entries_.size() - kMaxEntries);
+    for (auto it = entries_.begin(); it != entries_.begin() + excess; ++it) {
         std::error_code ec;
-        std::filesystem::remove(crashDir_ / (oldest.summary.id + ".json"), ec);
-        std::filesystem::remove(crashDir_ / (oldest.summary.id + ".txt"), ec);
-        entries_.erase(entries_.begin());
+        std::filesystem::remove(crashDir_ / (it->summary.id + ".json"), ec);
+        std::filesystem::remove(crashDir_ / (it->summary.id + ".txt"), ec);
     }
+    entries_.erase(entries_.begin(), entries_.begin() + excess);
 }
 
 std::string FaultStore::record(const FaultReport& report) noexcept {
