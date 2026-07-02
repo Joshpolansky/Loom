@@ -40,8 +40,18 @@ struct RuntimeConfig {
     std::filesystem::path dataDir         = "./data";
     std::chrono::milliseconds defaultCyclePeriod{100};
     /// Emit a periodic process memory/CPU log line (the --log-system-metrics
-    /// flag). Metrics are always sampled + served on /api/system regardless.
+    /// flag). Metrics are always sampled + served on /api/system regardless
+    /// (on thread-capable builds; a thread-free build serves zeros — see
+    /// SystemMetrics::start()).
     bool logSystemMetrics = false;
+
+    /// Cooperative (thread-free) mode: skip starting class threads and the file
+    /// watcher in loadModules(). The host drives execution by calling
+    /// scheduler().tickOnce() itself. Optional on a build with real threads
+    /// (LOOM_HAS_THREADS, see thread_support.h — native, or wasm built with
+    /// -pthread); FORCED to true by the RuntimeCore constructor on a build
+    /// without them (wasm without -pthread), regardless of this value.
+    bool cooperative = false;
 };
 
 /// Central runtime controller. Owns all subsystems and module lifecycle operations.

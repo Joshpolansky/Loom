@@ -15,11 +15,17 @@ class LoomDevConan(ConanFile):
     default_options = {"with_tests": True}
 
     def requirements(self):
-        # SDK deps — glaze listed explicitly since the SDK is consumed as source here
+        # Shared by every target. glaze is listed explicitly since the SDK is
+        # consumed as source here; spdlog is header-only on the WASM build (set
+        # in conan/profiles/emscripten) so no library is cross-compiled.
         self.requires("glaze/7.2.0")
-        # Runtime deps
         self.requires("spdlog/1.17.0")
-        self.requires("crowcpp-crow/1.3.0")
-        self.requires("cpptrace/0.8.3")  # runtime-only: crash-report stack symbolization
-        if self.options.with_tests:
-            self.requires("gtest/1.15.0")
+
+        # Native-host-only deps. The WASM runtime is thread-free and server-less:
+        # no HTTP/WebSocket (Crow), no in-process stack symbolization (cpptrace),
+        # and tests don't run there.
+        if self.settings.os != "Emscripten":
+            self.requires("crowcpp-crow/1.3.0")
+            self.requires("cpptrace/0.8.3")
+            if self.options.with_tests:
+                self.requires("gtest/1.15.0")

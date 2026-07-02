@@ -1,5 +1,7 @@
 #include "loom/diag/system_metrics.h"
 
+#include "loom/thread_support.h"
+
 #include <spdlog/spdlog.h>
 
 #include <thread>
@@ -129,9 +131,18 @@ SystemMetrics::SystemMetrics(Config cfg) : cfg_(cfg) {
 SystemMetrics::~SystemMetrics() { stop(); }
 
 void SystemMetrics::start() {
+#if !LOOM_HAS_THREADS
+    // No real OS threads on this build (wasm without -pthread; see
+    // thread_support.h) -- spawning the sampler would abort. Stay inert:
+    // current()/history() then serve zeros/empty, which /api/system reports
+    // as-is so the endpoint shape stays stable across hosts.
+    spdlog::debug("SystemMetrics: no thread support on this build; sampler not started");
+    return;
+#else
     if (running_.exchange(true)) return;
     startTime_ = std::chrono::steady_clock::now();
     thread_ = std::thread(&SystemMetrics::run, this);
+#endif
 }
 
 void SystemMetrics::stop() {

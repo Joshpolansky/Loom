@@ -1,5 +1,6 @@
 #include "loom/runtime_core.h"
 #include "loom/scheduler_config.h"
+#include "loom/thread_support.h"
 
 #include <filesystem>
 #include <fstream>
@@ -46,7 +47,21 @@ RuntimeCore::RuntimeCore(const RuntimeConfig& config)
       watcher_(config.moduleDir),
       faultStore_(config.dataDir / "crash"),
       systemMetrics_(diag::SystemMetrics::Config{ .logEnabled = config.logSystemMetrics }) {
-    // Begin sampling process memory/CPU; served on /api/system + the WS frame.
+#if !LOOM_HAS_THREADS
+    // This build has no real OS threads (see thread_support.h) -- cooperative
+    // mode isn't optional here, it's the only mode that works. Force it
+    // regardless of what the caller asked for, rather than let a mismatched
+    // request silently misbehave (startClasses() spawning threads that can't
+    // exist).
+    if (!config_.cooperative) {
+        spdlog::warn("RuntimeCore: this build has no real threads; forcing "
+                     "cooperative mode (RuntimeConfig::cooperative=false was requested)");
+        config_.cooperative = true;
+    }
+#endif
+    // Begin sampling process memory/CPU; served on /api/system + the WS live
+    // frame. On a thread-free build start() is a guarded no-op (it would spawn
+    // a std::thread that can't exist there) and /api/system serves zeros.
     systemMetrics_.start();
     // Load scheduler.json from the data directory.
     auto schedPath = config.dataDir / "scheduler.json";
@@ -163,9 +178,9 @@ std::vector<std::string> RuntimeCore::loadModules() {
             spdlog::warn("No modules loaded from instances.json");
             return ids;
         }
-        scheduler_.startClasses();
+        if (!config_.cooperative) scheduler_.startClasses();
         ioMapper_.resolveAll(*this);
-        setupWatcher();
+        if (!config_.cooperative) setupWatcher();
         return ids;
     }
 
@@ -203,9 +218,9 @@ std::vector<std::string> RuntimeCore::loadModules() {
         spdlog::info("Wrote instances.json with {} entry(ies)", discovered.size());
     }
 
-    scheduler_.startClasses();
+    if (!config_.cooperative) scheduler_.startClasses();
     ioMapper_.resolveAll(*this);
-    setupWatcher();
+    if (!config_.cooperative) setupWatcher();
     return ids;
 }
  
@@ -432,7 +447,11 @@ std::string RuntimeCore::instantiateModule(const std::string& soFilename,
         return {};
     }
 
-    scheduler_.startClasses();
+    // Only in threaded mode -- mirrors loadModules()'s guard. A cooperative
+    // instance must never spawn a class thread, even for a module added after
+    // boot (this hot-load path), or Scheduler::tickOnce() and a classLoop()
+    // thread could end up touching the same class concurrently.
+    if (!config_.cooperative) scheduler_.startClasses();
     ioMapper_.resolveAll(*this);
     saveInstanceManifest();
     return id;
@@ -512,7 +531,8 @@ std::string RuntimeCore::uploadModule(const std::filesystem::path& srcPath) {
         if (!startModule(loadedId, ctx)) {
             return {};
         }
-        scheduler_.startClasses();
+        // See the identical guard + comment in instantiateModule().
+        if (!config_.cooperative) scheduler_.startClasses();
         ioMapper_.resolveAll(*this);
         saveInstanceManifest();
     }

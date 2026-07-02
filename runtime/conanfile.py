@@ -39,7 +39,9 @@ class LoomRuntimeConan(ConanFile):
     def package_info(self):
         self.cpp_info.set_property("cmake_file_name", "loom-runtime")
         self.cpp_info.set_property("cmake_target_name", "loom::runtime")
-        self.cpp_info.libs = ["loom_runtime"]
+        # loom_runtime (native host) aggregates loom_core (portable engine).
+        # Order matters for static linking: dependent before dependency.
+        self.cpp_info.libs = ["loom_runtime", "loom_core"]
         self.cpp_info.includedirs = ["include"]
         self.cpp_info.libdirs = ["lib"]
 
