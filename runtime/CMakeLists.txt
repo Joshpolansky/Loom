@@ -39,6 +39,7 @@ add_library(loom_core STATIC
     src/io_mapper.cpp
     src/oscilloscope.cpp
     src/module_watcher.cpp
+    src/api/router.cpp
     src/diag/breadcrumb.cpp
     src/diag/fault_report.cpp
     src/diag/fault_store.cpp
@@ -58,6 +59,44 @@ target_link_libraries(loom_core PUBLIC
     spdlog::spdlog
     ${CMAKE_DL_LIBS}
 )
+
+if(EMSCRIPTEN)
+
+# ---------------------------------------------------------------------------
+# loom_host_wasm — WASM host: run_wasm.cpp + loom_core built as a MAIN_MODULE so
+# module plugins can be dlopen'd at runtime. No Crow / cpptrace / signals; driven
+# from JavaScript via Scheduler::tickOnce(). Emits loom_wasm.js + loom_wasm.wasm.
+# ---------------------------------------------------------------------------
+add_executable(loom_host_wasm src/run_wasm.cpp)
+target_compile_definitions(loom_host_wasm PRIVATE LOOM_BUILD_TYPE="$<CONFIG>")
+target_link_libraries(loom_host_wasm PRIVATE loom_core)
+set_target_properties(loom_host_wasm PROPERTIES OUTPUT_NAME loom_wasm SUFFIX ".js")
+target_link_options(loom_host_wasm PRIVATE
+    "-sMAIN_MODULE=1"
+    "-sALLOW_MEMORY_GROWTH=1"
+    "-sMODULARIZE=1"
+    "-sEXPORT_NAME=createLoomModule"
+    "-sENVIRONMENT=web,worker,node"
+    "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS']")
+
+# Stage the host straight into the frontend's static assets on every build, so
+# `cmake --build` alone is enough — no manual cp. Mirrors link_frontend_ui below
+# (native build symlinks data/UI -> frontend/dist for the same reason).
+if(EXISTS "${CMAKE_SOURCE_DIR}/frontend")
+    add_custom_command(TARGET loom_host_wasm POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/frontend/public"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:loom_host_wasm>"
+            "${CMAKE_SOURCE_DIR}/frontend/public/"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE_DIR:loom_host_wasm>/loom_wasm.wasm"
+            "${CMAKE_SOURCE_DIR}/frontend/public/"
+        COMMENT "Staging loom_wasm.js/.wasm into frontend/public/"
+        VERBATIM
+    )
+endif()
+
+else() # ---- native host ----------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # loom_runtime — native host layer over loom_core: the HTTP/WebSocket and
@@ -162,4 +201,6 @@ install(DIRECTORY "${CMAKE_SOURCE_DIR}/frontend/dist/"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/loom/ui
     OPTIONAL
 )
+
+endif() # EMSCRIPTEN / native host
 

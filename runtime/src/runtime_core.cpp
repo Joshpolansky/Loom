@@ -160,9 +160,9 @@ std::vector<std::string> RuntimeCore::loadModules() {
             spdlog::warn("No modules loaded from instances.json");
             return ids;
         }
-        scheduler_.startClasses();
+        if (!config_.cooperative) scheduler_.startClasses();
         ioMapper_.resolveAll(*this);
-        setupWatcher();
+        if (!config_.cooperative) setupWatcher();
         return ids;
     }
 
@@ -200,9 +200,9 @@ std::vector<std::string> RuntimeCore::loadModules() {
         spdlog::info("Wrote instances.json with {} entry(ies)", discovered.size());
     }
 
-    scheduler_.startClasses();
+    if (!config_.cooperative) scheduler_.startClasses();
     ioMapper_.resolveAll(*this);
-    setupWatcher();
+    if (!config_.cooperative) setupWatcher();
     return ids;
 }
  
@@ -429,7 +429,11 @@ std::string RuntimeCore::instantiateModule(const std::string& soFilename,
         return {};
     }
 
-    scheduler_.startClasses();
+    // Only in threaded mode -- mirrors loadModules()'s guard. A cooperative
+    // instance must never spawn a class thread, even for a module added after
+    // boot (this hot-load path), or Scheduler::tickOnce() and a classLoop()
+    // thread could end up touching the same class concurrently.
+    if (!config_.cooperative) scheduler_.startClasses();
     ioMapper_.resolveAll(*this);
     saveInstanceManifest();
     return id;
@@ -509,7 +513,8 @@ std::string RuntimeCore::uploadModule(const std::filesystem::path& srcPath) {
         if (!startModule(loadedId, ctx)) {
             return {};
         }
-        scheduler_.startClasses();
+        // See the identical guard + comment in instantiateModule().
+        if (!config_.cooperative) scheduler_.startClasses();
         ioMapper_.resolveAll(*this);
         saveInstanceManifest();
     }

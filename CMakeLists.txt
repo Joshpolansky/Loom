@@ -47,7 +47,9 @@ include(LoomModule)
 # has it), so release/downloaded runtimes still produce readable crash traces.
 # Symbols are shipped next to the binaries (install rules + CI staging). This is
 # metadata, not code — no effect on runtime speed, only binary/file size.
-if(LOOM_WITH_DEBUG_INFO)
+# Skipped for WASM: there's no in-process symbolization there (no cpptrace), and
+# -g would bloat the .wasm by ~10x for no benefit.
+if(LOOM_WITH_DEBUG_INFO AND NOT EMSCRIPTEN)
     if(MSVC)
         foreach(cfg RELEASE RELWITHDEBINFO MINSIZEREL)
             string(APPEND CMAKE_C_FLAGS_${cfg}             " /Zi")
@@ -80,16 +82,42 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 endif()
 
-# Conan-provided dependencies
+# Dependencies — all from Conan, native and wasm alike (same pinned versions, no
+# drift). glaze + spdlog are shared. The native host also needs Crow (HTTP/WS),
+# cpptrace (crash symbolization) and GTest; the WASM build is thread-free and
+# server-less and skips them (gated in conanfile.py via settings.os).
 find_package(glaze REQUIRED)
 find_package(spdlog REQUIRED)
-find_package(GTest REQUIRED)
-find_package(Crow REQUIRED)
-find_package(cpptrace REQUIRED)  # runtime-only: crash-report symbolization
+if(EMSCRIPTEN)
+    # spdlog is header-only here; alias it to the plain name the tree links
+    # against. Neutralize fmt's consteval (rejected by emcc's clang).
+    if(NOT TARGET spdlog::spdlog AND TARGET spdlog::spdlog_header_only)
+        add_library(spdlog::spdlog INTERFACE IMPORTED)
+        target_link_libraries(spdlog::spdlog INTERFACE spdlog::spdlog_header_only)
+    endif()
+    add_compile_definitions(FMT_CONSTEVAL=)
+    add_compile_options(-fexceptions)
+    add_link_options(-fexceptions)
+
+    # CMake's Emscripten platform defaults TARGET_SUPPORTS_SHARED_LIBS to FALSE,
+    # so add_library(MODULE) (used by every bundled module — modules/*/CMakeLists.txt)
+    # silently downgrades to a STATIC archive instead of a dlopen-able wasm side
+    # module. Override it before modules/ is added.
+    set_property(GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS TRUE)
+else()
+    find_package(GTest REQUIRED)
+    find_package(Crow REQUIRED)
+    find_package(cpptrace REQUIRED)  # runtime-only: crash-report symbolization
+endif()
 
 add_subdirectory(sdk)
 add_subdirectory(runtime)
-add_subdirectory(modules)
 
-enable_testing()
-add_subdirectory(tests)
+# Bundled modules build under both native and WASM (as SIDE_MODULEs — see
+# modules/CMakeLists.txt); EtherCAT is the one exception, gated out there.
+# Tests stay native-only (need GTest, which conanfile.py doesn't pull for wasm).
+add_subdirectory(modules)
+if(NOT EMSCRIPTEN)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
