@@ -41,8 +41,10 @@ struct RuntimeConfig {
 
     /// Cooperative (thread-free) mode: skip starting class threads and the file
     /// watcher in loadModules(). The host drives execution by calling
-    /// scheduler().tickOnce() itself. Used by single-threaded hosts (the WASM
-    /// build); leave false for the normal threaded runtime.
+    /// scheduler().tickOnce() itself. Optional on a build with real threads
+    /// (LOOM_HAS_THREADS, see thread_support.h — native, or wasm built with
+    /// -pthread); FORCED to true by the RuntimeCore constructor on a build
+    /// without them (wasm without -pthread), regardless of this value.
     bool cooperative = false;
 };
 

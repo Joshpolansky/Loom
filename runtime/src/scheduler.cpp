@@ -3,6 +3,7 @@
 #include "loom/io_mapper.h"
 #include "loom/diag/guard.h"
 #include "loom/diag/fault_sink.h"
+#include "loom/thread_support.h"
 
 #include <spdlog/spdlog.h>
 
@@ -288,7 +289,7 @@ bool Scheduler::start(LoadedModule& mod, const TaskConfig& config, const InitCon
 
     // Start long-running thread immediately (independent of class membership).
     if (config.enableLongRunning) {
-#ifndef __EMSCRIPTEN__   // wasm has no threads; background long-running work is skipped
+#if LOOM_HAS_THREADS
         statePtr->longRunningThread = std::thread([this, &mod, statePtr]() {
             spdlog::info("Long-running task started for '{}'", mod.id);
             while (statePtr->running.load()) {
@@ -322,20 +323,20 @@ bool Scheduler::start(LoadedModule& mod, const TaskConfig& config, const InitCon
             }
             spdlog::info("Long-running task ended for '{}'", mod.id);
         });
-#endif // __EMSCRIPTEN__
+#endif // LOOM_HAS_THREADS
     }
 
     const bool isIsolated = config.isolateThread || config.cyclicClass.empty();
 
     if (isIsolated) {
-#ifndef __EMSCRIPTEN__
+#if LOOM_HAS_THREADS
         statePtr->cyclicThread = std::thread([this, &mod, config, statePtr]() {
             isolatedLoop(mod, config, *statePtr);
         });
 #else
-        // No threads in wasm: drive an "isolated" module cooperatively by adding
-        // it to a class so tickOnce() sweeps it (its dedicated period collapses
-        // to that class's period).
+        // No real threads in this build: drive an "isolated" module
+        // cooperatively by adding it to a class so tickOnce() sweeps it (its
+        // dedicated period collapses to that class's period).
         auto& corunner = getOrCreateClass(config.cyclicClass.empty() ? "normal" : config.cyclicClass);
         insertMember(corunner, { mod.id, config.order, &mod, statePtr });
 #endif
@@ -359,7 +360,7 @@ void Scheduler::startClasses() {
         if (runner->members.empty() || runner->running.load()) continue;
 
         runner->running.store(true);
-#ifndef __EMSCRIPTEN__   // wasm drives classes cooperatively via tickOnce(), no threads
+#if LOOM_HAS_THREADS
         runner->thread = std::thread([this, r = runner.get()]() {
             classLoop(*r);
         });
@@ -722,18 +723,7 @@ void Scheduler::sortMembers(ClassRunnerState& runner) {
 }
 
 void Scheduler::pauseClass(ClassRunnerState& runner) {
-#ifdef __EMSCRIPTEN__
-    // No-op: wasm has no class thread (classLoop() is never spawned — see
-    // startClasses()/insertMember's #ifndef __EMSCRIPTEN__ guards), so there is
-    // nothing to pause and nothing that will ever ack. Waiting here deadlocks
-    // forever: insertMember() calls this for every module after the first one
-    // joining an already-"running" (per the flag, not actually threaded) class,
-    // and removeMember() calls it on reload/reassign — both went straight to
-    // pauseCv.wait() before this guard existed. The cooperative tick loop can't
-    // run concurrently with this synchronous call anyway (single JS thread), so
-    // the caller's subsequent runner.members mutation is already safe.
-    (void)runner;
-#else
+#if LOOM_HAS_THREADS
     if (!runner.running.load()) return;
 
     {
@@ -743,22 +733,36 @@ void Scheduler::pauseClass(ClassRunnerState& runner) {
     }
 
     // Wait for the class thread to finish its current tick and ack the pause.
+    // Real threads under Emscripten too when built with -pthread (see
+    // spike/phaseC-pthread-dlopen/, which proved this exact mutex+condvar
+    // handshake against a worker thread calling into a dlopen'd module).
     std::unique_lock lk(runner.pauseMx);
     runner.pauseCv.wait(lk, [&] {
         return runner.pauseAcked || !runner.running.load();
     });
+#else
+    // No-op: this build has no class thread (classLoop() is never spawned —
+    // see startClasses()/insertMember's #if LOOM_HAS_THREADS guards), so there
+    // is nothing to pause and nothing that will ever ack. Waiting here would
+    // deadlock forever: insertMember() calls this for every module after the
+    // first one joining an already-"running" (per the flag, not actually
+    // threaded) class, and removeMember() calls it on reload/reassign. The
+    // cooperative tick loop can't run concurrently with this synchronous call
+    // anyway (single JS thread), so the caller's subsequent runner.members
+    // mutation is already safe.
+    (void)runner;
 #endif
 }
 
 void Scheduler::unpauseClass(ClassRunnerState& runner) {
-#ifdef __EMSCRIPTEN__
-    (void)runner;  // no-op to match pauseClass(); see its comment.
-#else
+#if LOOM_HAS_THREADS
     {
         std::lock_guard lk(runner.pauseMx);
         runner.pauseRequested = false;
     }
     runner.pauseCv.notify_all();
+#else
+    (void)runner;  // no-op to match pauseClass(); see its comment.
 #endif
 }
 
@@ -891,6 +895,20 @@ void Scheduler::tickOnce() {
     // long, letting the class come due again immediately on the next tickOnce()
     // call instead of re-anchoring to the period grid. Mirrors classLoop, which
     // also samples `now` fresh after each tick's work for the same check.
+    //
+    // mutex_ held for the whole call: classLoop()'s hot path deliberately does
+    // NOT hold it (relies on the pause handshake instead, to stay real-time
+    // tight), but tickOnce() isn't a real-time hot path -- it's the cooperative
+    // driver -- so the coarser lock is an acceptable trade for correctness.
+    // RuntimeCore guarantees no classLoop() thread coexists with a cooperative
+    // instance (every startClasses() call site is gated on !cooperative), so
+    // this is defense-in-depth against a caller invoking tickOnce() and a
+    // structural Scheduler method (start/stop/updateClassDef/...) from two
+    // different OS threads concurrently -- newly plausible now that the wasm
+    // host can be built with real pthreads (see thread_support.h), even though
+    // nothing in the current host actually does this.
+    std::lock_guard lock(mutex_);
+
     const auto loopStart = std::chrono::steady_clock::now();
 
     for (auto& [name, runnerPtr] : classes_) {

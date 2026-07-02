@@ -1,11 +1,19 @@
 // run_wasm.cpp — Emscripten host for the Loom runtime.
 //
 // The native host (run.cpp + server.cpp) drives the runtime with class threads
-// and a Crow HTTP/WebSocket server. A browser can do neither, so this host
-// drives RuntimeCore *cooperatively*: it loads modules in cooperative mode (no
-// class threads, no file watcher) and steps the scheduler from JavaScript via
-// Scheduler::tickOnce(). State is read back as JSON through the same DataEngine
-// the server would expose. No Crow, no signals, no threads.
+// and a Crow HTTP/WebSocket server. A browser can't run a socket server, but
+// CAN run real threads (SharedArrayBuffer + Worker-backed std::thread, opted
+// into via -pthread in CMakeLists.txt — see spike/phaseC-pthread-dlopen/ for
+// the de-risking spike that proved dlopen + real worker threads + the
+// pauseClass()/unpauseClass() mutex+condvar handshake all work together).
+// So this host loads modules NON-cooperatively: RuntimeConfig::cooperative is
+// false, so RuntimeCore::loadModules() calls Scheduler::startClasses() (spawns
+// real class threads running classLoop() — the SAME code path as native,
+// unmodified) AND setupWatcher() (a real file-watcher thread over MEMFS; harmless
+// if nothing ever writes into moduleDir post-boot, but no longer special-cased
+// away). No Crow, no signals — but the scheduler and module watcher are the
+// real thing, not a JS-driven cooperative stand-in. State is read back as JSON
+// through the same DataEngine the server exposes.
 //
 // Built only for Emscripten and linked against loom_core (NOT loom_runtime).
 #ifdef __EMSCRIPTEN__
@@ -45,8 +53,9 @@ const char* stableString(std::string s) {
 extern "C" {
 
 // Boot the runtime. `moduleDir`/`dataDir` are paths in the Emscripten FS.
-// Modules already present in moduleDir are discovered and loaded cooperatively.
-// Returns the number of modules loaded, or -1 on error.
+// Modules already present in moduleDir are discovered and loaded onto real
+// class threads (startClasses()) — same as native. Returns the number of
+// modules loaded, or -1 on error.
 EMSCRIPTEN_KEEPALIVE
 int loom_init(const char* moduleDir, const char* dataDir) {
     spdlog::set_level(spdlog::level::info);
@@ -54,7 +63,7 @@ int loom_init(const char* moduleDir, const char* dataDir) {
         loom::RuntimeConfig cfg;
         cfg.moduleDir   = moduleDir ? moduleDir : "/modules";
         cfg.dataDir     = dataDir   ? dataDir   : "/data";
-        cfg.cooperative = true;   // no class threads, no file watcher
+        cfg.cooperative = false;   // real class threads + file watcher (-pthread)
         g_core = std::make_unique<loom::RuntimeCore>(cfg);
         g_ids = g_core->loadModules();
         spdlog::info("loom_init: {} module(s) loaded", g_ids.size());
@@ -66,10 +75,29 @@ int loom_init(const char* moduleDir, const char* dataDir) {
     }
 }
 
-// Advance every due class one cooperative pass. Call from JS on a timer / rAF.
+// Cooperative-mode-only: advance every due class one pass. Real class threads
+// (the current, non-cooperative default — see loom_init) self-drive via
+// classLoop() and must NEVER be swept concurrently by tickOnce() too — both
+// would call sweepClassOnce() on the same runner.members with no mutual
+// exclusion between them. Kept exported (a lighter-weight cooperative mode may
+// still be useful, e.g. where -pthread's COOP/COEP hosting requirement can't be
+// met) but is a safe no-op unless the runtime was actually booted cooperative.
 EMSCRIPTEN_KEEPALIVE
 void loom_tick() {
-    if (g_core) g_core->scheduler().tickOnce();
+    if (!g_core) return;
+    if (!g_core->config().cooperative) {
+        // Warn once, not per call: the JS service ticks on a 25ms interval
+        // regardless of mode, so a per-call warning is 40 lines/sec of spam.
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            spdlog::warn("loom_tick() called on a non-cooperative runtime (real class "
+                         "threads are already driving it) -- ignored, and further "
+                         "ticks are ignored silently.");
+        }
+        return;
+    }
+    g_core->scheduler().tickOnce();
 }
 
 // Comma-separated ids of the modules loaded by loom_init. Valid until the next
@@ -101,8 +129,10 @@ const char* loom_request(const char* method, const char* path, const char* body)
 
 // Load an arbitrary user module from a file already written into the Emscripten
 // FS (the JS service FS.writeFile()s the bytes, then calls this). Copies it into
-// the module dir, loads + starts it cooperatively. Returns the loaded module id
-// (empty string on failure), valid until the next exported call.
+// the module dir, loads + starts it in whichever mode the runtime booted
+// (threaded here -- loom_init sets cooperative=false, so uploadModule() starts
+// real class threads). Returns the loaded module id (empty string on failure),
+// valid until the next exported call.
 EMSCRIPTEN_KEEPALIVE
 const char* loom_load_module(const char* path) {
     if (!g_core || !path) return stableString("");

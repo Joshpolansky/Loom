@@ -1,5 +1,6 @@
 #include "loom/runtime_core.h"
 #include "loom/scheduler_config.h"
+#include "loom/thread_support.h"
 
 #include <filesystem>
 #include <fstream>
@@ -45,6 +46,18 @@ RuntimeCore::RuntimeCore(const RuntimeConfig& config)
     : config_(config), dataStore_(config.dataDir),
       watcher_(config.moduleDir),
       faultStore_(config.dataDir / "crash") {
+#if !LOOM_HAS_THREADS
+    // This build has no real OS threads (see thread_support.h) -- cooperative
+    // mode isn't optional here, it's the only mode that works. Force it
+    // regardless of what the caller asked for, rather than let a mismatched
+    // request silently misbehave (startClasses() spawning threads that can't
+    // exist).
+    if (!config_.cooperative) {
+        spdlog::warn("RuntimeCore: this build has no real threads; forcing "
+                     "cooperative mode (RuntimeConfig::cooperative=false was requested)");
+        config_.cooperative = true;
+    }
+#endif
     // Load scheduler.json from the data directory.
     auto schedPath = config.dataDir / "scheduler.json";
     bool schedExisted = std::filesystem::exists(schedPath);
