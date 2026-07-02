@@ -36,7 +36,7 @@ TEST_F(CommandIntegrationTest, CommandRoundTripAcrossModuleBoundary) {
     // Wire dependencies exactly as RuntimeCore::startModule does.
     mod->instance->setBus(&bus, id);
     mod->instance->setRuntimeHeap(&heap);
-    mod->instance->init(loom::InitContext{});
+    mod->instance->initGuarded(loom::InitContext{});
 
     // provideCommands() registered the channel on the bus under the module id.
     auto* channel = bus.commandChannel(id);
