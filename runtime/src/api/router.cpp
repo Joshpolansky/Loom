@@ -529,6 +529,11 @@ Response dispatch(RuntimeCore& core, const Request& req) {
         out += "\"ts\":" + std::to_string(cur.tsMs);
         out += ",\"rssBytes\":" + std::to_string(cur.rssBytes);
         out += ",\"peakRssBytes\":" + std::to_string(cur.peakRssBytes);
+        // heapUsedBytes = live allocations per the allocator's own bookkeeping;
+        // 0 where the platform reader is unavailable (render as absent, not as
+        // an empty heap). RSS climbing while this stays flat is allocator page
+        // retention, not a leak; both climbing together is a leak.
+        out += ",\"heapUsedBytes\":" + std::to_string(cur.heapUsedBytes);
         out += ",\"cpuPercent\":" + std::to_string(cur.cpuPercent);
         out += ",\"uptimeSec\":" + std::to_string(cur.uptimeSec);
         out += ",\"history\":[";
@@ -538,6 +543,7 @@ Response dispatch(RuntimeCore& core, const Request& req) {
             first = false;
             out += "{\"ts\":" + std::to_string(s.tsMs) +
                    ",\"rssBytes\":" + std::to_string(s.rssBytes) +
+                   ",\"heapUsedBytes\":" + std::to_string(s.heapUsedBytes) +
                    ",\"cpuPercent\":" + std::to_string(s.cpuPercent) + "}";
         }
         out += "]}";
