@@ -18,22 +18,27 @@
 #include <spdlog/spdlog.h>
 #include <emscripten/emscripten.h>
 
-#include <cstdlib>
-#include <cstring>
 #include <exception>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
 std::unique_ptr<loom::RuntimeCore> g_core;
 std::vector<std::string>           g_ids;   // ids of modules loaded by loom_init
 
-// Copy a std::string into a malloc'd C buffer the JS side reads then free()s.
-char* dupString(const std::string& s) {
-    char* out = static_cast<char*>(std::malloc(s.size() + 1));
-    if (out) std::memcpy(out, s.c_str(), s.size() + 1);
-    return out;
+// Hand a string to JS via a static buffer that stays valid until the next
+// exported call. The JS side binds these with cwrap(..., 'string', ...), which
+// copies the bytes out synchronously and never free()s the pointer — so a
+// malloc'd return (as an earlier revision used) leaked per call, unbounded
+// under readNode() polling. A single static buffer is safe here: every
+// exported entry point runs on the JS main thread, and cwrap's copy completes
+// before any other exported call can observe the buffer.
+const char* stableString(std::string s) {
+    static std::string buf;
+    buf = std::move(s);
+    return buf.c_str();
 }
 } // namespace
 
@@ -67,22 +72,23 @@ void loom_tick() {
     if (g_core) g_core->scheduler().tickOnce();
 }
 
-// Comma-separated ids of the modules loaded by loom_init. malloc'd; caller free()s.
+// Comma-separated ids of the modules loaded by loom_init. Valid until the next
+// exported call (JS copies immediately — see stableString).
 EMSCRIPTEN_KEEPALIVE
-char* loom_module_ids() {
+const char* loom_module_ids() {
     std::string s;
     for (std::size_t i = 0; i < g_ids.size(); ++i) { if (i) s += ','; s += g_ids[i]; }
-    return dupString(s);
+    return stableString(std::move(s));
 }
 
 // Route a REST request (method, path, body) through the same transport-agnostic
-// dispatcher the native HTTP server uses. Returns a malloc'd JSON envelope
-// {"status":<int>,"body":<raw json>} (caller free()s) so the JS fetch shim can
-// build a Response with the right status. Body is embedded raw (every handler
-// returns valid JSON).
+// dispatcher the native HTTP server uses. Returns a JSON envelope
+// {"status":<int>,"body":<raw json>} (valid until the next exported call) so
+// the JS fetch shim can build a Response with the right status. Body is
+// embedded raw (every handler returns valid JSON).
 EMSCRIPTEN_KEEPALIVE
-char* loom_request(const char* method, const char* path, const char* body) {
-    if (!g_core) return dupString("{\"status\":503,\"body\":null}");
+const char* loom_request(const char* method, const char* path, const char* body) {
+    if (!g_core) return stableString("{\"status\":503,\"body\":null}");
     loom::api::Request req;
     req.method = loom::api::methodFromString(method ? method : "GET");
     req.path   = path ? path : "";
@@ -90,33 +96,32 @@ char* loom_request(const char* method, const char* path, const char* body) {
     loom::api::Response resp = loom::api::dispatch(*g_core, req);
     std::string env = "{\"status\":" + std::to_string(resp.status) +
                       ",\"body\":" + (resp.body.empty() ? "null" : resp.body) + "}";
-    return dupString(env);
+    return stableString(std::move(env));
 }
 
 // Load an arbitrary user module from a file already written into the Emscripten
 // FS (the JS service FS.writeFile()s the bytes, then calls this). Copies it into
 // the module dir, loads + starts it cooperatively. Returns the loaded module id
-// (empty string on failure). malloc'd; caller free()s.
+// (empty string on failure), valid until the next exported call.
 EMSCRIPTEN_KEEPALIVE
-char* loom_load_module(const char* path) {
-    if (!g_core || !path) return dupString("");
+const char* loom_load_module(const char* path) {
+    if (!g_core || !path) return stableString("");
     try {
         std::string id = g_core->uploadModule(path);
         if (!id.empty()) g_ids.push_back(id);
-        return dupString(id);
+        return stableString(std::move(id));
     } catch (const std::exception& e) {
         spdlog::error("loom_load_module('{}') failed: {}", path, e.what());
-        return dupString("");
+        return stableString("");
     }
 }
 
-// Reflected runtime state of one module instance, as a JSON string. Returns a
-// malloc'd C string the caller must free() (null on error).
+// Reflected runtime state of one module instance, as a JSON string valid until
+// the next exported call (null on error).
 EMSCRIPTEN_KEEPALIVE
-char* loom_state_json(const char* moduleId) {
+const char* loom_state_json(const char* moduleId) {
     if (!g_core || !moduleId) return nullptr;
-    std::string js = g_core->dataEngine().readSection(moduleId, loom::DataSection::Runtime);
-    return dupString(js);
+    return stableString(g_core->dataEngine().readSection(moduleId, loom::DataSection::Runtime));
 }
 
 // --- OPC-UA-style reflected tag access (backs the WasmMachine) ---------------
@@ -125,19 +130,21 @@ char* loom_state_json(const char* moduleId) {
 // WasmMachine can satisfy lux-react's useVariable()/writeVariable() in-browser.
 
 // Read a node's reflected value as JSON. Returns "null" for unknown/non-value
-// nodes. malloc'd; caller free()s.
+// nodes. Valid until the next exported call (JS copies immediately) — this one
+// gets polled continuously by WasmMachine subscriptions, which is exactly why
+// the returns must not allocate per call.
 EMSCRIPTEN_KEEPALIVE
-char* loom_read_node(const char* nodeId) {
-    if (!g_core || !nodeId) return dupString("null");
+const char* loom_read_node(const char* nodeId) {
+    if (!g_core || !nodeId) return stableString("null");
     auto p = loom::opcrest::parseNodeId(loom::opcrest::urlDecode(nodeId));
     using K = loom::opcrest::ParsedNode::Kind;
-    if (p.kind != K::Field && p.kind != K::Section) return dupString("null");
+    if (p.kind != K::Field && p.kind != K::Section) return stableString("null");
     std::shared_lock<std::shared_mutex> lock(g_core->moduleMutex());
     auto* mod = g_core->loader().get(p.moduleId);
-    if (!mod || !mod->instance) return dupString("null");
-    if (p.kind == K::Section) return dupString(mod->instance->readSection(p.section));
+    if (!mod || !mod->instance) return stableString("null");
+    if (p.kind == K::Section) return stableString(mod->instance->readSection(p.section));
     auto v = mod->instance->readField(p.section, p.fieldPointer);
-    return dupString(v ? *v : std::string("null"));
+    return stableString(v ? std::move(*v) : std::string("null"));
 }
 
 // Write a node's reflected value from JSON. Returns 1 on success, 0 on failure.

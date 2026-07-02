@@ -44,6 +44,13 @@ setup-wasm:
 
 # Build the WASM runtime host → output/loom_wasm.{js,wasm}. Uses the Conan-
 # generated preset (build/Wasm), just as native uses conan-debug.
+#
+# CAVEAT: the Emscripten Release install generates a preset NAMED
+# "conan-release" (Conan names presets by build_type, not output folder), the
+# same name `just build-release` (build/Release) would generate — whichever
+# ran last wins in CMakeUserPresets.json. Native dev builds use conan-debug so
+# the two coexist fine; just don't mix `build-release` and `build-wasm` in one
+# checkout without re-running the matching setup first.
 build-wasm: setup-wasm
     cmake --preset conan-release
     cmake --build --preset conan-release
