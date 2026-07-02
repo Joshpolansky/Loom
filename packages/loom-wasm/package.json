@@ -13,9 +13,6 @@
     "build": "tsc -b && cp src/loomRuntime.js src/loomRuntime.d.ts dist/",
     "build:wasm": "./scripts/build-wasm.sh"
   },
-  "peerDependencies": {
-    "@loupeteam/lux-connect": "^0.0.3"
-  },
   "devDependencies": {
     "typescript": "~5.9.3"
   },

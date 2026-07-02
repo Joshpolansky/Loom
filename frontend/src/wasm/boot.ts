@@ -13,7 +13,8 @@
 // relative path rather than via node_modules/workspaces, since this repo
 // intentionally has no workspace tooling (one new package doesn't justify a
 // monorepo migration). This IS loom's own frontend dogfooding that package.
-// @ts-expect-error — plain-JS runtime service (see loomRuntime.js)
+// loomRuntime.js is plain JS but has a sibling loomRuntime.d.ts alongside it
+// providing real types, so no @ts-expect-error is needed here.
 import { createLoomRuntime } from '../../../packages/loom-wasm/src/loomRuntime.js';
 import { WasmMachine } from '../../../packages/loom-wasm/src/WasmMachine';
 import { isWasmMode } from './wasmMode';
