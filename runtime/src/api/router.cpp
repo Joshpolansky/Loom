@@ -70,7 +70,8 @@ std::string serializeCycleHistory(const std::deque<MetricSample>& samples, std::
     return json;
 }
 
-std::string moduleInfoJson(const LoadedModule& mod, const Scheduler& scheduler) {
+std::string moduleInfoJson(const LoadedModule& mod, const Scheduler& scheduler,
+                           std::string_view extraFields) {
     auto* ts = scheduler.taskState(mod.id);
 
     std::string json = "{";
@@ -108,6 +109,10 @@ std::string moduleInfoJson(const LoadedModule& mod, const Scheduler& scheduler) 
         }
 
         json += "}";
+    }
+    if (!extraFields.empty()) {
+        json += ",";
+        json += extraFields;
     }
     json += "}";
     return json;
@@ -341,15 +346,13 @@ Response dispatch(RuntimeCore& core, const Request& req) {
                 // frontend's ModuleDetail page requires the `data` object
                 // (getModule() in rest.ts) — info alone breaks it, which is
                 // what the native pre-migration route always included.
-                std::string out = moduleInfoJson(*mod, core.scheduler());
-                out.pop_back();  // strip closing '}' to append the data object
-                out += ",\"data\":{";
-                out += "\"config\":"   + core.dataEngine().readSection(modId, DataSection::Config);
-                out += ",\"recipe\":"  + core.dataEngine().readSection(modId, DataSection::Recipe);
-                out += ",\"runtime\":" + core.dataEngine().readSection(modId, DataSection::Runtime);
-                out += ",\"summary\":" + core.dataEngine().readSection(modId, DataSection::Summary);
-                out += "}}";
-                return json(200, std::move(out));
+                std::string data = "\"data\":{";
+                data += "\"config\":"   + core.dataEngine().readSection(modId, DataSection::Config);
+                data += ",\"recipe\":"  + core.dataEngine().readSection(modId, DataSection::Recipe);
+                data += ",\"runtime\":" + core.dataEngine().readSection(modId, DataSection::Runtime);
+                data += ",\"summary\":" + core.dataEngine().readSection(modId, DataSection::Summary);
+                data += "}";
+                return json(200, moduleInfoJson(*mod, core.scheduler(), data));
             }
             if (method == Method::DELETE_) {
                 if (!core.removeInstance(modId)) return json(404, "{\"error\":\"instance not found\"}");
@@ -541,7 +544,7 @@ Response dispatch(RuntimeCore& core, const Request& req) {
     if (method == Method::GET && path == "/api/bus/topics") {
         auto topics = core.bus().topics();
         std::string out = "[";
-        for (std::size_t i = 0; i < topics.size(); ++i) { if (i) out += ","; out += "\"" + topics[i] + "\""; }
+        for (std::size_t i = 0; i < topics.size(); ++i) { if (i) out += ","; out += "\"" + jsonEscapeString(topics[i]) + "\""; }
         out += "]";
         return json(200, std::move(out));
     }
@@ -552,7 +555,7 @@ Response dispatch(RuntimeCore& core, const Request& req) {
         std::string out = "[";
         for (std::size_t i = 0; i < infos.size(); ++i) {
             if (i) out += ",";
-            out += "{\"name\":\"" + infos[i].name + "\",\"schema\":";
+            out += "{\"name\":\"" + jsonEscapeString(infos[i].name) + "\",\"schema\":";
             out += infos[i].schema.empty() ? "null" : infos[i].schema;
             out += "}";
         }
@@ -566,7 +569,7 @@ Response dispatch(RuntimeCore& core, const Request& req) {
         auto result = core.bus().call(serviceName, body);
         std::string out = "{\"ok\":" + std::string(result.ok ? "true" : "false");
         if (!result.response.empty()) out += ",\"response\":" + result.response;
-        if (!result.error.empty())    out += ",\"error\":\"" + result.error + "\"";
+        if (!result.error.empty())    out += ",\"error\":\"" + jsonEscapeString(result.error) + "\"";
         out += "}";
         return json(200, std::move(out));
     }
@@ -638,12 +641,12 @@ Response dispatch(RuntimeCore& core, const Request& req) {
             if (!entry) continue;
             if (!first) out += ",";
             out += "{\"index\":" + std::to_string(i);
-            out += ",\"source\":\"" + (i < mapper.getMappings().size() ? mapper.getMappings()[i].src_module_id : "") + "\"";
-            out += ",\"target\":\"" + (i < mapper.getMappings().size() ? mapper.getMappings()[i].dst_module_id : "") + "\"";
+            out += ",\"source\":\"" + jsonEscapeString(i < mapper.getMappings().size() ? mapper.getMappings()[i].src_module_id : "") + "\"";
+            out += ",\"target\":\"" + jsonEscapeString(i < mapper.getMappings().size() ? mapper.getMappings()[i].dst_module_id : "") + "\"";
             out += ",\"enabled\":" + std::string(entry->valid ? "true" : "false");
             out += ",\"resolved\":" + std::string(entry->valid ? "true" : "false");
             out += ",\"stable\":" + std::string(entry->stable ? "true" : "false");
-            out += ",\"error\":\"" + entry->error + "\"}";
+            out += ",\"error\":\"" + jsonEscapeString(entry->error) + "\"}";
             first = false;
         }
         out += "]";

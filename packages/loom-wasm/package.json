@@ -10,7 +10,7 @@
     "wasm"
   ],
   "scripts": {
-    "build": "tsc -b && cp src/loomRuntime.js src/loomRuntime.d.ts dist/",
+    "build": "tsc -b && node -e \"for (const f of ['loomRuntime.js','loomRuntime.d.ts']) require('fs').copyFileSync('src/'+f, 'dist/'+f)\"",
     "build:wasm": "./scripts/build-wasm.sh"
   },
   "devDependencies": {
