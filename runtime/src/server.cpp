@@ -192,6 +192,11 @@ void Server::start() {
         // GET /api/faults/<id> and POST /api/modules/instantiate — migrated to
         // api::dispatch (router.cpp).
 
+        // GET /api/system (process memory/CPU metrics + history) — migrated to
+        // api::dispatch (router.cpp) so the wasm host serves it too; served by
+        // the catch-all below. The WS live frame's `system` block stays here
+        // (WebSockets are native-only).
+
         // GET /api/modules/<id> (module detail: info + data sections) — migrated
         // to api::dispatch (router.cpp), which now serves the same ModuleDetail
         // shape this route used to build; served by the catch-all below.
@@ -480,6 +485,7 @@ void Server::start() {
                 std::unordered_map<std::string, std::string> moduleFragments;
                 std::unordered_map<std::string, std::string> runtimeFragments;
                 std::string classesTail;
+                std::string systemTail;
                 {
                     std::shared_lock<std::shared_mutex> lock(core_.moduleMutex());
 
@@ -524,7 +530,17 @@ void Server::start() {
                         classesTail += "}";
                         firstClass = false;
                     }
-                    classesTail += "}}";
+                    classesTail += "}";  // close "classes" only; root closed after the system block
+
+                    // Process resource metrics (memory + CPU). Same for every
+                    // connection, so build once here; closes the root object.
+                    const auto sys = core_.systemMetrics().current();
+                    systemTail = ",\"system\":{";
+                    systemTail += "\"rssBytes\":" + std::to_string(sys.rssBytes);
+                    systemTail += ",\"peakRssBytes\":" + std::to_string(sys.peakRssBytes);
+                    systemTail += ",\"cpuPercent\":" + std::to_string(sys.cpuPercent);
+                    systemTail += ",\"uptimeSec\":" + std::to_string(sys.uptimeSec);
+                    systemTail += "}}";
                 }
 
                 // One send_binary per connection — runtime data embedded inline for
@@ -553,6 +569,7 @@ void Server::start() {
                         first = false;
                     }
                     msg += classesTail;
+                    msg += systemTail;
                     conn->send_binary(msg);
                 }
             }

@@ -45,7 +45,8 @@ std::filesystem::path resolveModulePath(const RuntimeConfig& config,
 RuntimeCore::RuntimeCore(const RuntimeConfig& config)
     : config_(config), dataStore_(config.dataDir),
       watcher_(config.moduleDir),
-      faultStore_(config.dataDir / "crash") {
+      faultStore_(config.dataDir / "crash"),
+      systemMetrics_(diag::SystemMetrics::Config{ .logEnabled = config.logSystemMetrics }) {
 #if !LOOM_HAS_THREADS
     // This build has no real OS threads (see thread_support.h) -- cooperative
     // mode isn't optional here, it's the only mode that works. Force it
@@ -58,6 +59,10 @@ RuntimeCore::RuntimeCore(const RuntimeConfig& config)
         config_.cooperative = true;
     }
 #endif
+    // Begin sampling process memory/CPU; served on /api/system + the WS live
+    // frame. On a thread-free build start() is a guarded no-op (it would spawn
+    // a std::thread that can't exist there) and /api/system serves zeros.
+    systemMetrics_.start();
     // Load scheduler.json from the data directory.
     auto schedPath = config.dataDir / "scheduler.json";
     bool schedExisted = std::filesystem::exists(schedPath);

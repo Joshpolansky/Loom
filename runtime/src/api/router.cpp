@@ -514,6 +514,36 @@ Response dispatch(RuntimeCore& core, const Request& req) {
         return json(200, "{\"ok\":true}");
     }
 
+    // GET /api/system — process resource metrics (memory + CPU) + history.
+    // On a thread-free build the sampler never starts (see
+    // SystemMetrics::start()), so this serves zeros and an empty history
+    // rather than 404ing — the shape stays stable across hosts.
+    // History points carry only the chartable series (ts/rssBytes/cpuPercent),
+    // deliberately leaner than the top-level sample: peakRssBytes is monotonic
+    // (the current value subsumes the history) and uptimeSec is derivable from
+    // ts — repeating them 600x per poll is pure payload bloat.
+    if (method == Method::GET && path == "/api/system") {
+        const auto cur  = core.systemMetrics().current();
+        const auto hist = core.systemMetrics().history();
+        std::string out = "{";
+        out += "\"ts\":" + std::to_string(cur.tsMs);
+        out += ",\"rssBytes\":" + std::to_string(cur.rssBytes);
+        out += ",\"peakRssBytes\":" + std::to_string(cur.peakRssBytes);
+        out += ",\"cpuPercent\":" + std::to_string(cur.cpuPercent);
+        out += ",\"uptimeSec\":" + std::to_string(cur.uptimeSec);
+        out += ",\"history\":[";
+        bool first = true;
+        for (const auto& s : hist) {
+            if (!first) out += ",";
+            first = false;
+            out += "{\"ts\":" + std::to_string(s.tsMs) +
+                   ",\"rssBytes\":" + std::to_string(s.rssBytes) +
+                   ",\"cpuPercent\":" + std::to_string(s.cpuPercent) + "}";
+        }
+        out += "]}";
+        return json(200, std::move(out));
+    }
+
     // GET /api/faults — fault reports (newest first)
     if (method == Method::GET && path == "/api/faults") {
         std::string out = "[";

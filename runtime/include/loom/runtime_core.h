@@ -5,6 +5,7 @@
 #include "loom/data_store.h"
 #include "loom/diag/fault_store.h"
 #include "loom/diag/runtime_fault_sink.h"
+#include "loom/diag/system_metrics.h"
 #include "loom/instance_manifest.h"
 #include "loom/io_mapper.h"
 #include "loom/module.h"
@@ -38,6 +39,11 @@ struct RuntimeConfig {
     std::vector<std::filesystem::path> additionalModuleDirs;
     std::filesystem::path dataDir         = "./data";
     std::chrono::milliseconds defaultCyclePeriod{100};
+    /// Emit a periodic process memory/CPU log line (the --log-system-metrics
+    /// flag). Metrics are always sampled + served on /api/system regardless
+    /// (on thread-capable builds; a thread-free build serves zeros — see
+    /// SystemMetrics::start()).
+    bool logSystemMetrics = false;
 
     /// Cooperative (thread-free) mode: skip starting class threads and the file
     /// watcher in loadModules(). The host drives execution by calling
@@ -104,6 +110,7 @@ public:
     Oscilloscope& oscilloscope()    { return oscilloscope_; }
     IOMapper& ioMapper()            { return ioMapper_; }
     diag::FaultStore& faultStore()  { return faultStore_; }
+    diag::SystemMetrics& systemMetrics() { return systemMetrics_; }
     const RuntimeConfig& config() const { return config_; }
     const SchedulerConfig& schedulerConfig() const { return schedCfg_; }
 
@@ -150,6 +157,7 @@ private:
     // it references so it is destroyed first.
     diag::FaultStore                   faultStore_;
     std::unique_ptr<diag::IFaultSink>  faultSink_;
+    diag::SystemMetrics                systemMetrics_;
 
     std::shared_mutex moduleMutex_;
 };
