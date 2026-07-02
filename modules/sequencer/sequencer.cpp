@@ -105,7 +105,6 @@ public:
         runtime_.running = false;
     }
 
-    void longRunning() override {}
 
 private:
     void goToStep(int step, const std::string& name) {

@@ -38,6 +38,38 @@ if(MSVC)
     string(APPEND CMAKE_MODULE_LINKER_FLAGS_DEBUG " /DEBUG")
 endif()
 
+# Module-build helpers (loom_add_module, debug-info + dSYM) — shared with module
+# authors via the SDK install. Defines the LOOM_WITH_DEBUG_INFO option.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+include(LoomModule)
+
+# Emit debug info for crash symbolization in OPTIMIZED configs too (Debug always
+# has it), so release/downloaded runtimes still produce readable crash traces.
+# Symbols are shipped next to the binaries (install rules + CI staging). This is
+# metadata, not code — no effect on runtime speed, only binary/file size.
+# Skipped for WASM: there's no in-process symbolization there (no cpptrace), and
+# -g would bloat the .wasm by ~10x for no benefit.
+if(LOOM_WITH_DEBUG_INFO AND NOT EMSCRIPTEN)
+    if(MSVC)
+        foreach(cfg RELEASE RELWITHDEBINFO MINSIZEREL)
+            string(APPEND CMAKE_C_FLAGS_${cfg}             " /Zi")
+            string(APPEND CMAKE_CXX_FLAGS_${cfg}           " /Zi")
+            # /OPT:REF,ICF keeps the optimized image lean (the linker turns them
+            # off once /DEBUG is present).
+            string(APPEND CMAKE_EXE_LINKER_FLAGS_${cfg}    " /DEBUG /OPT:REF /OPT:ICF")
+            string(APPEND CMAKE_SHARED_LINKER_FLAGS_${cfg} " /DEBUG /OPT:REF /OPT:ICF")
+            string(APPEND CMAKE_MODULE_LINKER_FLAGS_${cfg} " /DEBUG /OPT:REF /OPT:ICF")
+        endforeach()
+    else()
+        # Linux: DWARF embedded in the (unstripped) binary. macOS: -g leaves DWARF
+        # in the .o files; a .dSYM is produced per target by loom_target_dsym().
+        foreach(cfg RELEASE RELWITHDEBINFO)
+            string(APPEND CMAKE_C_FLAGS_${cfg}   " -g")
+            string(APPEND CMAKE_CXX_FLAGS_${cfg} " -g")
+        endforeach()
+    endif()
+endif()
+
 # Platform-appropriate suffix for Loom module plugins (.dll on Windows, .so elsewhere)
 if(WIN32)
     set(LOOM_MODULE_SUFFIX ".dll")
@@ -50,15 +82,55 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 endif()
 
-# Conan-provided dependencies
+# Dependencies — all from Conan, native and wasm alike (same pinned versions, no
+# drift). glaze + spdlog are shared. The native host also needs Crow (HTTP/WS),
+# cpptrace (crash symbolization) and GTest; the WASM build is server-less and
+# skips them (gated in conanfile.py via settings.os).
 find_package(glaze REQUIRED)
 find_package(spdlog REQUIRED)
-find_package(GTest REQUIRED)
-find_package(Crow REQUIRED)
+if(EMSCRIPTEN)
+    # spdlog is header-only here; alias it to the plain name the tree links
+    # against. Neutralize fmt's consteval (rejected by emcc's clang).
+    if(NOT TARGET spdlog::spdlog AND TARGET spdlog::spdlog_header_only)
+        add_library(spdlog::spdlog INTERFACE IMPORTED)
+        target_link_libraries(spdlog::spdlog INTERFACE spdlog::spdlog_header_only)
+    endif()
+    add_compile_definitions(FMT_CONSTEVAL=)
+    add_compile_options(-fexceptions)
+    add_link_options(-fexceptions)
+
+    # Real threading (SharedArrayBuffer + Worker-backed std::thread), applied
+    # globally so loom_core, loom_host_wasm, AND every bundled module (dlopen'd
+    # SIDE_MODULEs) agree on the threaded object format -- a SIDE_MODULE built
+    # without -pthread loaded into a -pthread MAIN_MODULE is not a supported
+    # combination. De-risked standalone in spike/phaseC-pthread-dlopen/ (real
+    # worker thread driving dlopen'd module code, incl. a pauseClass()-style
+    # mutex+condvar handshake and cross-thread C++ exceptions -- all passed).
+    # Emscripten itself flags dynamic-linking+pthreads as experimental
+    # (-Wexperimental); this is the reason to keep an eye on it going forward,
+    # not a reason it's broken today.
+    add_compile_options(-pthread)
+    add_link_options(-pthread)
+
+    # CMake's Emscripten platform defaults TARGET_SUPPORTS_SHARED_LIBS to FALSE,
+    # so add_library(MODULE) (used by every bundled module — modules/*/CMakeLists.txt)
+    # silently downgrades to a STATIC archive instead of a dlopen-able wasm side
+    # module. Override it before modules/ is added.
+    set_property(GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS TRUE)
+else()
+    find_package(GTest REQUIRED)
+    find_package(Crow REQUIRED)
+    find_package(cpptrace REQUIRED)  # runtime-only: crash-report symbolization
+endif()
 
 add_subdirectory(sdk)
 add_subdirectory(runtime)
-add_subdirectory(modules)
 
-enable_testing()
-add_subdirectory(tests)
+# Bundled modules build under both native and WASM (as SIDE_MODULEs — see
+# modules/CMakeLists.txt); EtherCAT is the one exception, gated out there.
+# Tests stay native-only (need GTest, which conanfile.py doesn't pull for wasm).
+add_subdirectory(modules)
+if(NOT EMSCRIPTEN)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
