@@ -538,6 +538,7 @@ void Server::start() {
                     systemTail = ",\"system\":{";
                     systemTail += "\"rssBytes\":" + std::to_string(sys.rssBytes);
                     systemTail += ",\"peakRssBytes\":" + std::to_string(sys.peakRssBytes);
+                    systemTail += ",\"heapUsedBytes\":" + std::to_string(sys.heapUsedBytes);
                     systemTail += ",\"cpuPercent\":" + std::to_string(sys.cpuPercent);
                     systemTail += ",\"uptimeSec\":" + std::to_string(sys.uptimeSec);
                     systemTail += "}}";

@@ -33,6 +33,13 @@ public:
         std::string reason;
     };
 
+    /// Retention cap: newest kMaxEntries faults are kept, in memory AND on
+    /// disk (older report files are deleted as new ones arrive). Without a cap
+    /// a fault-looping module grows the store without bound — each entry holds
+    /// the full report JSON including stack traces — and the crash dir
+    /// compounds across runs (scanDir() reloads every file at boot).
+    static constexpr std::size_t kMaxEntries = 200;
+
     explicit FaultStore(std::filesystem::path crashDir);
 
     /// Persist a live fault (JSON file + in-memory summary). Returns its id.
@@ -56,9 +63,13 @@ private:
     /// Load existing reports from disk (called once at construction).
     void scanDir();
 
+    /// Drop oldest entries (and their disk files) beyond kMaxEntries. Caller
+    /// holds mx_ (or is the single-threaded constructor).
+    void enforceCap();
+
     std::filesystem::path crashDir_;
     mutable std::mutex    mx_;
-    std::vector<Entry>    entries_;   ///< append-only; newest at the back
+    std::vector<Entry>    entries_;   ///< newest at the back; capped at kMaxEntries
 };
 
 } // namespace loom::diag

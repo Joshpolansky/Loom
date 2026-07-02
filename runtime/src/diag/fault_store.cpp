@@ -104,6 +104,18 @@ void FaultStore::scanDir() {
     // list()'s reverse walk yields newest-first. Raw .txt reports have ts 0.
     std::sort(entries_.begin(), entries_.end(),
               [](const Entry& a, const Entry& b) { return a.summary.tsMs < b.summary.tsMs; });
+    // An over-full crash dir from prior runs is trimmed at boot too.
+    enforceCap();
+}
+
+void FaultStore::enforceCap() {
+    while (entries_.size() > kMaxEntries) {
+        const auto& oldest = entries_.front();
+        std::error_code ec;
+        std::filesystem::remove(crashDir_ / (oldest.summary.id + ".json"), ec);
+        std::filesystem::remove(crashDir_ / (oldest.summary.id + ".txt"), ec);
+        entries_.erase(entries_.begin());
+    }
 }
 
 std::string FaultStore::record(const FaultReport& report) noexcept {
@@ -124,6 +136,7 @@ std::string FaultStore::record(const FaultReport& report) noexcept {
                 spdlog::warn("FaultStore: fault '{}' kept in memory only — failed to write {}",
                              report.id, path.string());
             entries_.push_back({summarize(report.id, json), std::move(json)});
+            enforceCap();
         }
         return report.id;
     } catch (const std::exception& e) {

@@ -25,11 +25,12 @@
 namespace loom::diag {
 
 struct SystemSample {
-    int64_t  tsMs         = 0;   ///< system_clock milliseconds
-    uint64_t rssBytes     = 0;   ///< current resident set size
-    uint64_t peakRssBytes = 0;   ///< peak resident set size since start
-    double   cpuPercent   = 0.0; ///< process CPU over the last interval, 0–100% of the machine
-    int64_t  uptimeSec    = 0;   ///< seconds since the sampler started
+    int64_t  tsMs          = 0;   ///< system_clock milliseconds
+    uint64_t rssBytes      = 0;   ///< current resident set size
+    uint64_t peakRssBytes  = 0;   ///< peak resident set size since start
+    double   cpuPercent    = 0.0; ///< process CPU over the last interval, 0–100% of the machine
+    int64_t  uptimeSec     = 0;   ///< seconds since the sampler started
+    uint64_t heapUsedBytes = 0;   ///< bytes in LIVE heap allocations (see readHeapUsedBytes)
 };
 
 class SystemMetrics {
@@ -64,6 +65,13 @@ public:
     static uint64_t readPeakRssBytes();
     static uint64_t readCpuTimeNs();   ///< total process CPU time (user+system)
     static unsigned cpuCount();
+    /// Bytes currently held by LIVE heap allocations, from the allocator's own
+    /// bookkeeping (malloc_zone_statistics on macOS, mallinfo2 on Linux; 0 where
+    /// unavailable). This is the leak-vs-churn discriminator RSS alone can't
+    /// give: RSS ratchets up to the allocator's page high-water mark and stays
+    /// there, while heapUsed tracks what's actually alive. RSS climbing with
+    /// flat heapUsed = retention/fragmentation; both climbing together = leak.
+    static uint64_t readHeapUsedBytes();
 
 private:
     void run();

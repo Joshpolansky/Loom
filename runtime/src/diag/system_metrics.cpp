@@ -14,12 +14,16 @@
 #  include <psapi.h>
 #elif defined(__APPLE__)
 #  include <mach/mach.h>
+#  include <malloc/malloc.h>
 #  include <sys/resource.h>
 #  include <unistd.h>
 #else  // Linux & other POSIX
 #  include <sys/resource.h>
 #  include <unistd.h>
 #  include <cstdio>
+#  if defined(__GLIBC__)
+#    include <malloc.h>
+#  endif
 #endif
 
 namespace loom::diag {
@@ -27,6 +31,24 @@ namespace loom::diag {
 unsigned SystemMetrics::cpuCount() {
     unsigned n = std::thread::hardware_concurrency();
     return n ? n : 1;
+}
+
+uint64_t SystemMetrics::readHeapUsedBytes() {
+#if defined(__APPLE__)
+    // Sum across all malloc zones (nullptr = every zone in the process).
+    malloc_statistics_t st{};
+    malloc_zone_statistics(nullptr, &st);
+    return static_cast<uint64_t>(st.size_in_use);
+#elif defined(__GLIBC__) && ((__GLIBC__ > 2) || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
+    // uordblks = bytes in allocated (live) chunks, main arena + mmapped.
+    struct mallinfo2 mi = mallinfo2();
+    return static_cast<uint64_t>(mi.uordblks) + static_cast<uint64_t>(mi.hblkhd);
+#else
+    // Windows / musl / older glibc: no cheap allocator introspection wired up.
+    // 0 means "unavailable", which consumers should render as absent, not as
+    // an empty heap.
+    return 0;
+#endif
 }
 
 #if defined(_WIN32)
@@ -181,10 +203,11 @@ void SystemMetrics::run() {
         s.tsMs = static_cast<int64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count());
-        s.rssBytes     = readRssBytes();
-        s.peakRssBytes = readPeakRssBytes();
-        s.cpuPercent   = cpuPct;
-        s.uptimeSec    = std::chrono::duration_cast<std::chrono::seconds>(now - startTime_).count();
+        s.rssBytes      = readRssBytes();
+        s.peakRssBytes  = readPeakRssBytes();
+        s.cpuPercent    = cpuPct;
+        s.uptimeSec     = std::chrono::duration_cast<std::chrono::seconds>(now - startTime_).count();
+        s.heapUsedBytes = readHeapUsedBytes();
 
         {
             std::lock_guard lock(mx_);
@@ -194,9 +217,9 @@ void SystemMetrics::run() {
         }
 
         if (cfg_.logEnabled) {
-            spdlog::info("system: rss={} MB  peak={} MB  cpu={:.1f}%  uptime={}s",
-                         s.rssBytes / (1024 * 1024), s.peakRssBytes / (1024 * 1024),
-                         s.cpuPercent, s.uptimeSec);
+            spdlog::info("system: rss={} MB  heap={} MB  peak={} MB  cpu={:.1f}%  uptime={}s",
+                         s.rssBytes / (1024 * 1024), s.heapUsedBytes / (1024 * 1024),
+                         s.peakRssBytes / (1024 * 1024), s.cpuPercent, s.uptimeSec);
         }
     }
 }
