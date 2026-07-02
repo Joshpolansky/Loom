@@ -27,7 +27,13 @@ export async function createLoomRuntime({ createModule, tickMs = 25 } = {}) {
     writeNode:  M.cwrap('loom_write_node', 'number', ['string', 'string']),
   };
 
-  c.init('/modules', '/data');
+  // loom_init returns the module count, or -1 on a boot failure (in which case
+  // the C++ side has torn the runtime down and every later call would 503).
+  // Fail fast rather than hand back a runtime that quietly serves errors.
+  const initCount = c.init('/modules', '/data');
+  if (initCount < 0) {
+    throw new Error('createLoomRuntime: loom_init failed -- see the console for the runtime error');
+  }
   let timer = setInterval(() => c.tick(), tickMs);
 
   /** Route a request through the wasm runtime. @returns {{status:number, body:any}} */

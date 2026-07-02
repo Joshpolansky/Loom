@@ -231,7 +231,9 @@ struct InstantiateRequest { std::string id; std::string so; };
 namespace {
 Response json(int status, std::string body) { return {status, "application/json", std::move(body)}; }
 Response notFound() { return json(404, "{\"error\":\"no matching route\"}"); }
-Response badRequest(std::string msg) { return json(400, "{\"error\":\"" + std::move(msg) + "\"}"); }
+// msg must be escaped: some callers pass messages containing quotes (e.g. the
+// PATCH body-shape hint), which would otherwise make the response invalid JSON.
+Response badRequest(std::string msg) { return json(400, "{\"error\":\"" + jsonEscapeString(std::move(msg)) + "\"}"); }
 
 // Permissive JSON read: unknown/missing keys are not errors (PATCH-style partial
 // bodies, forward-compatible clients).
@@ -335,7 +337,19 @@ Response dispatch(RuntimeCore& core, const Request& req) {
                 std::shared_lock<std::shared_mutex> lock(core.moduleMutex());
                 auto* mod = core.loader().get(modId);
                 if (!mod) return json(404, "{\"error\":\"module not found\"}");
-                return json(200, moduleInfoJson(*mod, core.scheduler()));
+                // ModuleDetail = ModuleInfo + live data-section snapshots. The
+                // frontend's ModuleDetail page requires the `data` object
+                // (getModule() in rest.ts) — info alone breaks it, which is
+                // what the native pre-migration route always included.
+                std::string out = moduleInfoJson(*mod, core.scheduler());
+                out.pop_back();  // strip closing '}' to append the data object
+                out += ",\"data\":{";
+                out += "\"config\":"   + core.dataEngine().readSection(modId, DataSection::Config);
+                out += ",\"recipe\":"  + core.dataEngine().readSection(modId, DataSection::Recipe);
+                out += ",\"runtime\":" + core.dataEngine().readSection(modId, DataSection::Runtime);
+                out += ",\"summary\":" + core.dataEngine().readSection(modId, DataSection::Summary);
+                out += "}}";
+                return json(200, std::move(out));
             }
             if (method == Method::DELETE_) {
                 if (!core.removeInstance(modId)) return json(404, "{\"error\":\"instance not found\"}");

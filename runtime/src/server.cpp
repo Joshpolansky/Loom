@@ -192,66 +192,9 @@ void Server::start() {
         // GET /api/faults/<id> and POST /api/modules/instantiate — migrated to
         // api::dispatch (router.cpp).
 
-        // =====================================================================
-        // GET /api/modules/:id — Module detail
-        // =====================================================================
-        CROW_ROUTE(app, "/api/modules/<string>")
-        ([this](const std::string& id) {
-            std::shared_lock<std::shared_mutex> lock(core_.moduleMutex());
-            auto* mod = core_.loader().get(id);
-            if (!mod) {
-                auto resp = crow::response(404, R"({"error":"module not found"})");
-                resp.add_header("Content-Type", "application/json");
-                resp.add_header("Access-Control-Allow-Origin", "*");
-                return resp;
-            }
-
-            // Build detail with data sections included
-            std::string json = "{";
-            json += "\"id\":\"" + mod->id + "\"";
-            json += ",\"name\":\"" + mod->nameStr + "\"";
-            json += ",\"version\":\"" + mod->versionStr + "\"";
-            json += ",\"state\":" + std::to_string(static_cast<int>(mod->state));
-            json += ",\"path\":\"" + jsonEscapeString(mod->path.string()) + "\"";
-            if (!mod->sourceFileStr.empty()) {
-                json += ",\"sourceFile\":\"" + jsonEscapeString(mod->sourceFileStr) + "\"";
-            }
-            json += ",\"cyclicClass\":\"" + core_.scheduler().moduleClass(mod->id) + "\"";
-
-            auto* ts = core_.scheduler().taskState(mod->id);
-            if (ts) {
-                json += ",\"stats\":{";
-                json += "\"cycleCount\":" + std::to_string(ts->cycleCount.load());
-                json += ",\"overrunCount\":" + std::to_string(ts->overrunCount.load());
-                json += ",\"lastCycleTimeUs\":" + std::to_string(ts->lastCycleTimeUs.load());
-                json += ",\"maxCycleTimeUs\":" + std::to_string(ts->maxCycleTimeUs.load());
-                json += ",\"lastJitterUs\":" + std::to_string(ts->lastJitterUs.load());
-
-                // Add cycle history
-                {
-                    std::lock_guard lk(ts->cycleHistoryMx);
-                    auto histVec = ts->cycleHistory.getAll();
-                    json += ",\"cycleHistory\":" + serializeCycleHistory(histVec);
-                }
-
-                json += "}";
-            }
-
-            // Include current data
-            json += ",\"data\":{";
-            json += "\"config\":"  + core_.dataEngine().readSection(id, DataSection::Config);
-            json += ",\"recipe\":" + core_.dataEngine().readSection(id, DataSection::Recipe);
-            json += ",\"runtime\":" + core_.dataEngine().readSection(id, DataSection::Runtime);
-            json += ",\"summary\":" + core_.dataEngine().readSection(id, DataSection::Summary);
-            json += "}";
-
-            json += "}";
-
-            auto resp = crow::response(200, json);
-            resp.add_header("Content-Type", "application/json");
-            resp.add_header("Access-Control-Allow-Origin", "*");
-            return resp;
-        });
+        // GET /api/modules/<id> (module detail: info + data sections) — migrated
+        // to api::dispatch (router.cpp), which now serves the same ModuleDetail
+        // shape this route used to build; served by the catch-all below.
 
         // GET/POST/PUT/PATCH /api/modules/<id>/data/<section>, POST
         // /api/modules/<id>/config/{save,load}, POST
@@ -835,10 +778,20 @@ void Server::start() {
         // GET is handled by "/<path>" above (see its comment) — kept here too
         // since it's harmless dead weight if ever reached, and POST/PUT/PATCH/
         // DELETE reliably reach this one (no GET-only sibling to contend with).
+        // OPTIONS answers CORS preflight: the pre-migration per-route handlers
+        // did this explicitly, and without it cross-origin non-GET requests to
+        // migrated routes die at the preflight step before dispatch is reached.
         CROW_ROUTE(app, "/api/<path>").methods(
             crow::HTTPMethod::Get, crow::HTTPMethod::Post, crow::HTTPMethod::Put,
-            crow::HTTPMethod::Patch, crow::HTTPMethod::Delete)
+            crow::HTTPMethod::Patch, crow::HTTPMethod::Delete, crow::HTTPMethod::Options)
         ([this](const crow::request& creq, const std::string&) {
+            if (creq.method == crow::HTTPMethod::Options) {
+                crow::response resp(204);
+                resp.add_header("Access-Control-Allow-Origin", "*");
+                resp.add_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+                resp.add_header("Access-Control-Allow-Headers", "Content-Type");
+                return resp;
+            }
             api::Request areq;
             areq.method = crowMethodToApi(creq.method);
             // raw_url includes the "?query" suffix (creq.url is path-only) — dispatch()
