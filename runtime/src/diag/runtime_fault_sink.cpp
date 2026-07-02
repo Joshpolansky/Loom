@@ -75,7 +75,7 @@ void RuntimeFaultSink::onModuleFault(const FaultEvent& ev) {
         r.sections = std::move(sections);
 
         std::string json = toJson(r);
-        store_.record(r);
+        store_.record(r, json);
         bus_.publish("loom/faults", json);
     } catch (const std::exception& e) {
         spdlog::error("RuntimeFaultSink failed to record fault: {}", e.what());

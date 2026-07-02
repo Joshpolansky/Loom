@@ -107,8 +107,11 @@ void FaultStore::scanDir() {
 }
 
 std::string FaultStore::record(const FaultReport& report) noexcept {
+    return record(report, toJson(report));
+}
+
+std::string FaultStore::record(const FaultReport& report, std::string json) noexcept {
     try {
-        std::string json = toJson(report);
         {
             std::lock_guard lock(mx_);
             const auto path = crashDir_ / (report.id + ".json");

@@ -67,7 +67,10 @@ endfunction()
 #      surface (guard(), command dispatch) relies on real exception unwinding.
 #      De-risked standalone (cross-module throw/catch across a real worker
 #      thread) in the loom repo's spike/phaseC-pthread-dlopen/.
-#   3. FMT_CONSTEVAL= neutralizes fmt's consteval format-string checks, which
+#   3. -pthread must match the MAIN_MODULE's threading mode: the host is built
+#      with -pthread (shared memory + atomics), so every SIDE_MODULE must also
+#      use -pthread or dlopen will fail with an object-format mismatch.
+#   4. FMT_CONSTEVAL= neutralizes fmt's consteval format-string checks, which
 #      emcc's clang rejects; harmless if a module never includes spdlog/fmt.
 # All apply per-module (not globally), so a consumer's own CMakeLists.txt needs
 # zero Emscripten-specific configuration for modules built via loom_add_module.
@@ -75,8 +78,8 @@ function(loom_target_wasm_module_support target)
     if(NOT EMSCRIPTEN)
         return()
     endif()
-    target_compile_options(${target} PRIVATE -sSIDE_MODULE=1 -fexceptions)
-    target_link_options(${target} PRIVATE -sSIDE_MODULE=1 -fexceptions)
+    target_compile_options(${target} PRIVATE -sSIDE_MODULE=1 -fexceptions -pthread)
+    target_link_options(${target} PRIVATE -sSIDE_MODULE=1 -fexceptions -pthread)
     target_compile_definitions(${target} PRIVATE FMT_CONSTEVAL=)
 endfunction()
 

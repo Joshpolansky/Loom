@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -212,12 +213,13 @@ public:
     inline void registerPort(const std::string& name, void* ptr, std::string_view typeId) {
         std::lock_guard lock(portMutex_);
         ports_[name] = PortEntry{ptr, std::string(typeId)};
-        ++portGeneration_;
+        portGeneration_.fetch_add(1, std::memory_order_release);
     }
 
     inline void unregisterPort(const std::string& name) {
         std::lock_guard lock(portMutex_);
-        if (ports_.erase(name) != 0) ++portGeneration_;
+        if (ports_.erase(name) != 0)
+            portGeneration_.fetch_add(1, std::memory_order_release);
     }
 
     inline PortEntry lookupPort(const std::string& name) const {
@@ -227,10 +229,10 @@ public:
     }
 
     /// Bumped on every (un)register, so consumers can detect a changed registry
-    /// without re-doing a string lookup every cycle.
+    /// without re-doing a string lookup every cycle. Lock-free fast path for
+    /// PortRef::get() — no mutex needed to read the generation counter.
     inline uint64_t portGeneration() const {
-        std::lock_guard lock(portMutex_);
-        return portGeneration_;
+        return portGeneration_.load(std::memory_order_acquire);
     }
 
     /// Typed resolve: nullptr if the port is absent or its type id doesn't match
@@ -305,7 +307,7 @@ private:
 
     mutable std::mutex portMutex_;
     std::unordered_map<std::string, PortEntry> ports_;
-    uint64_t portGeneration_ = 1;   // nonzero so a freshly-default PortRef re-resolves
+    std::atomic<uint64_t> portGeneration_{1};  // nonzero so a freshly-default PortRef re-resolves; lock-free fast path
 };
 
 } // namespace loom

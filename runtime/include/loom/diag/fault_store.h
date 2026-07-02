@@ -39,6 +39,9 @@ public:
     /// Safe to call from any worker thread; never throws.
     std::string record(const FaultReport& report) noexcept;
 
+    /// Same as record() but accepts pre-serialized JSON to avoid double toJson() work.
+    std::string record(const FaultReport& report, std::string json) noexcept;
+
     /// All known faults, newest first.
     std::vector<Summary> list() const;
 
