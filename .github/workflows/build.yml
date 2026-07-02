@@ -177,6 +177,18 @@ jobs:
             exit 1
           fi
 
+          # Debug symbols next to the loom binary, so crash reports symbolize
+          # in-process on the downloaded runtime. Windows: loom.pdb (installed to
+          # install/bin). macOS: produce loom.dSYM via dsymutil (the .o debug map
+          # is still present in this job). Linux: DWARF is embedded in the binary.
+          cp install/bin/loom.pdb "${STAGE}/" 2>/dev/null || true
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            shopt -s nullglob
+            for b in "${STAGE}"/loom "${STAGE}"/loom.exe; do
+              [ -f "$b" ] && dsymutil "$b" -o "${b}.dSYM" || true
+            done
+          fi
+
           # Module plugins. On Windows they are under output/modules/<Config>
           # (Debug or Release). On other platforms they are flat in output/modules.
           BUILD_TYPE="${{ matrix.build_type }}"
@@ -191,6 +203,15 @@ jobs:
             shopt -s nullglob
             for mod in "${MOD_DIR}"/*.so "${MOD_DIR}"/*.dylib "${MOD_DIR}"/*.dll; do
               cp "$mod" "${STAGE}/modules/"
+              # Ship each module's debug symbols alongside it so a crash in
+              # module code resolves to file:line. Windows: <name>.pdb lives in
+              # output/ (CMAKE_PDB_OUTPUT_DIRECTORY). macOS: dsymutil → .dSYM.
+              # Linux: DWARF is embedded in the .so.
+              base="$(basename "$mod")"; stem="${base%.*}"
+              [ -f "output/${stem}.pdb" ] && cp "output/${stem}.pdb" "${STAGE}/modules/" || true
+              if [ "${{ runner.os }}" = "macOS" ]; then
+                dsymutil "${STAGE}/modules/${base}" -o "${STAGE}/modules/${base}.dSYM" || true
+              fi
             done
           fi
 

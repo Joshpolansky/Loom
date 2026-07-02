@@ -37,6 +37,28 @@ protected:
 };
 
 // ---------------------------------------------------------------------------
+// Class-based "meta data type": a non-aggregate class (has a constructor) with
+// an explicit glz::meta — exactly how the function-block / class_based modules
+// expose their fields. glz::reflectable<MetaLeaf> is false here; only
+// glz::glaze_object_t is true, which is precisely the case the tag table used
+// to miss.
+// ---------------------------------------------------------------------------
+struct MetaLeaf {
+    int    a;
+    double b;
+    MetaLeaf() : a(5), b(6.5) {}
+};
+template <> struct glz::meta<MetaLeaf> {
+    using T = MetaLeaf;
+    static constexpr auto value = glz::object("a", &T::a, "b", &T::b);
+};
+
+struct MetaRoot {
+    int      top = 1;
+    MetaLeaf fb  = {};   // nested meta type
+};
+
+// ---------------------------------------------------------------------------
 // Scalar & nested struct
 // ---------------------------------------------------------------------------
 TEST_F(TagTableTest, ScalarRegistered) {
@@ -61,6 +83,30 @@ TEST_F(TagTableTest, NestedStructFields) {
     EXPECT_EQ(px, &root.nested.x);
     root.nested.x = 9.9;
     EXPECT_EQ(*table.read_json("nested/x"), "9.9");
+}
+
+// Regression: a nested glz::meta (glaze_object_t) type must have its sub-fields
+// indexed, not be treated as an opaque leaf. Before the recursion-guard fix the
+// "fb/a" / "fb/b" paths were missing, so the OPC UA facade / watch tree couldn't
+// see fields of class-based / function-block data types.
+TEST(TagTableMetaTest, NestedMetaTypeFieldsIndexed) {
+    MetaRoot root{};
+    loom::TagTable<MetaRoot> table{root};
+
+    EXPECT_TRUE(table.contains("top"));     // plain top-level field
+    EXPECT_TRUE(table.contains("fb"));      // the meta object itself
+
+    // The bug: these sub-paths used to be absent.
+    ASSERT_TRUE(table.contains("fb/a"));
+    ASSERT_TRUE(table.contains("fb/b"));
+    EXPECT_EQ(*table.read_json("fb/a"), "5");
+
+    // ptr resolves into the live nested object and tracks mutations.
+    auto* pa = static_cast<int*>(table.ptr("fb/a"));
+    ASSERT_NE(pa, nullptr);
+    EXPECT_EQ(pa, &root.fb.a);
+    root.fb.a = 77;
+    EXPECT_EQ(*table.read_json("fb/a"), "77");
 }
 
 // ---------------------------------------------------------------------------

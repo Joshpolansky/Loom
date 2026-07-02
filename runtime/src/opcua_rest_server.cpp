@@ -273,12 +273,33 @@ void OpcUaRestServer::pumpLoop() {
         std::lock_guard<std::mutex> smlk(sm_.mutex());
 
         // Prune idle sessions that timed out without a DELETE. Sessions with a
-        // live pushchannel are kept (their keep-alive HEADs refresh lastSeen).
+        // live pushchannel are kept (their keep-alive HEADs refresh lastSeen)
+        // -- but only up to a grace multiple of the timeout: a half-open TCP
+        // connection (client vanished without a FIN: laptop sleep, cable pull)
+        // keeps pushConns non-empty forever with no traffic Crow would notice,
+        // pinning the session and every monitored item's lastJson for the life
+        // of the process. All known clients keep-alive well inside timeoutMs
+        // (LoomUI PATCHes every 10s, lux-connect every 20s vs the 30s default),
+        // so a connected-but-silent session past 3x timeout is abandoned:
+        // force-close its sockets and reap it. The late onclose is harmless
+        // (unbindPushConn scans by pointer; a missing session is a no-op).
         for (auto it = sm_.sessions().begin(); it != sm_.sessions().end();) {
             auto& s = it->second;
             const double ageMs = static_cast<double>(duration_cast<milliseconds>(now - s.lastSeen).count());
-            if (s.pushConns.empty() && ageMs > s.timeoutMs) it = sm_.sessions().erase(it);
-            else ++it;
+            const bool idleExpired = s.pushConns.empty() && ageMs > s.timeoutMs;
+            const bool abandonedWs = !s.pushConns.empty() && ageMs > 3.0 * s.timeoutMs;
+            if (idleExpired || abandonedWs) {
+                if (abandonedWs) {
+                    spdlog::info("opcua_rest: reaping session {} ({} pushchannel conn(s), "
+                                 "no keep-alive for {:.0f}s)", s.id, s.pushConns.size(), ageMs / 1000.0);
+                    for (auto* c : s.pushConns) {
+                        try { c->close("session expired"); } catch (...) { /* already dead */ }
+                    }
+                }
+                it = sm_.sessions().erase(it);
+            } else {
+                ++it;
+            }
         }
 
         {

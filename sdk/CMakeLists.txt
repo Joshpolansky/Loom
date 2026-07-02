@@ -14,6 +14,29 @@ else()
     set(LOOM_SDK_VERSION ${PROJECT_VERSION})
 endif()
 
+# Optional git identity, stamped into version.h. Degrades gracefully: if git or
+# the .git dir is absent (source-tarball / conan-cache / no-git builds), kGitSha
+# becomes "unknown" and the build NEVER fails. kSdkVersion + BuildInfo remain the
+# always-present identifiers.
+set(LOOM_GIT_SHA "unknown")
+find_package(Git QUIET)
+if(Git_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_SOURCE_DIR}" rev-parse --short=12 HEAD
+        OUTPUT_VARIABLE LOOM_GIT_SHA OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(NOT LOOM_GIT_SHA)
+        set(LOOM_GIT_SHA "unknown")
+    else()
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} -C "${CMAKE_SOURCE_DIR}" status --porcelain --untracked-files=no
+            OUTPUT_VARIABLE _loom_git_dirty OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(_loom_git_dirty)
+            set(LOOM_GIT_SHA "${LOOM_GIT_SHA}+dirty")
+        endif()
+    endif()
+endif()
+message(STATUS "Loom git sha: ${LOOM_GIT_SHA}")
+
 # Generate version.h from the template so every module built against this SDK
 # has the exact version string baked in at compile time.
 configure_file(
@@ -60,15 +83,23 @@ configure_package_config_file(
     INSTALL_DESTINATION ${CONFIG_INSTALL_DIR}
 )
 
+# ARCH_INDEPENDENT: the SDK is a header-only INTERFACE library (no compiled
+# binaries), so it's genuinely usable from any target architecture/pointer
+# width. Without this, find_package(loom CONFIG)'s default compatibility
+# check compares CMAKE_SIZEOF_VOID_P against the arch this was installed
+# from, silently rejecting the package for any cross-compile (e.g. wasm32)
+# consumer even though nothing here actually depends on pointer size.
 write_basic_package_version_file(
     ${CMAKE_CURRENT_BINARY_DIR}/loomConfigVersion.cmake
     VERSION ${LOOM_SDK_VERSION}
     COMPATIBILITY AnyNewerVersion
+    ARCH_INDEPENDENT
 )
 
 install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/loomConfig.cmake
     ${CMAKE_CURRENT_BINARY_DIR}/loomConfigVersion.cmake
+    ${CMAKE_SOURCE_DIR}/cmake/LoomModule.cmake
     DESTINATION ${CONFIG_INSTALL_DIR}
 )
 

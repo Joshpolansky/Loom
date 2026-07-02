@@ -92,7 +92,6 @@ public:
 
     void exit() override {}
 
-    void longRunning() override {}
 
 private:
     bool wasExtended_ = false;

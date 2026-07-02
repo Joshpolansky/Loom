@@ -4,6 +4,7 @@
 #include "loom/scheduler_config.h"
 #include "loom/oscilloscope.h"
 #include "loom/data_engine.h"
+#include "loom/diag/breadcrumb.h"
 
 #include <atomic>
 #include <chrono>
@@ -18,6 +19,8 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+namespace loom::diag { class IFaultSink; }
 
 namespace loom {
 
@@ -73,6 +76,17 @@ struct TaskState {
     std::atomic<int64_t>  maxCycleTimeUs{0};
     std::atomic<int64_t>  lastJitterUs{0};      ///< |actualStart − prevStart| − period (µs)
     std::atomic<int64_t>  lastCyclicStartNs{0}; ///< Used internally to compute per-module jitter
+
+    // Last-fault diagnostics, written by the faulting worker thread in
+    // Scheduler::recordModuleFault() and read by the server thread.
+    // Synchronization: recordModuleFault writes these fields, THEN stores
+    // `faulted` with memory_order_release. Readers MUST load `faulted` with
+    // acquire and read these only when it is true. A module faults at most once
+    // (it is skipped afterward), so lastFaultMsg is effectively write-once —
+    // hence safe to read as a plain buffer after observing faulted==true.
+    std::atomic<int64_t>  lastFaultMs{0};       ///< system_clock ms of last fault (0 = none)
+    std::atomic<uint8_t>  lastFaultPhase{0};    ///< Phase value at fault
+    char                  lastFaultMsg[256] = {};
 
     // Historical cycle/jitter data for charting (fixed-size ring buffer)
     MetricRingBuffer cycleHistory;
@@ -135,6 +149,23 @@ public:
     /// Idempotent: already-running classes are skipped.
     void startClasses();
 
+    /// Run one cooperative scheduling pass: every class whose period has elapsed
+    /// (tracked against a steady clock, independently per class — see
+    /// ClassRunnerState::coopNextDue) gets one sweep of its members (preCyclic →
+    /// cyclic → I/O map → postCyclic), in place on the calling thread. No class
+    /// threads spawned, no sleeping, no RT thread policy. For hosts running in
+    /// cooperative mode (RuntimeConfig::cooperative; forced true when
+    /// !LOOM_HAS_THREADS, optional otherwise — see thread_support.h) that drive
+    /// the runtime from an external loop instead of startClasses(). Periods ARE
+    /// enforced (a "fast" class still runs more often than a "slow" one, capped
+    /// by call frequency); priority/affinity are NOT — they require an OS
+    /// thread, which cooperative mode doesn't have. Do NOT mix with
+    /// startClasses() on the same instance — RuntimeCore enforces this
+    /// (every startClasses() call site is gated on !cooperative), so as long
+    /// as callers go through RuntimeCore rather than a bare Scheduler this
+    /// can't happen. Takes the scheduler mutex for the duration of the call.
+    void tickOnce();
+
     /// Configure optional targets for cycle-aligned sampling.
     /// Pass pointers to the `Oscilloscope`, `DataEngine`, `ModuleLoader`, and
     /// the runtime `moduleMutex` so the scheduler can enqueue snapshots after
@@ -145,6 +176,11 @@ public:
     /// Configure the IOMapper for runtime field-value copying.
     /// The scheduler will call executeForClass/executeForModule at appropriate times.
     void setIOMapper(IOMapper* mapper);
+
+    /// Inject the fault sink notified when a guarded module call throws. Not
+    /// owned; must outlive the scheduler. Optional — nullptr disables reporting
+    /// (the module is still quarantined). Set before startClasses().
+    void setFaultSink(diag::IFaultSink* sink) { faultSink_ = sink; }
 
     /// Stop a module. Removes from class (or stops isolated thread). Joins long-running thread.
     /// Does NOT call exit() — caller's responsibility.
@@ -227,6 +263,13 @@ private:
         std::atomic<int>      liveCpuAffinity{-1};
         std::atomic<uint64_t> cfgEpoch{0};
 
+        // Cooperative (tickOnce) scheduling only: the next steady-clock deadline
+        // at which this class is due to run. Default (epoch 0) = "not yet
+        // anchored"; tickOnce anchors it on first sight and advances it by the
+        // live period each run, so classes keep independent rates without
+        // threads. Unused by the threaded classLoop path.
+        std::chrono::steady_clock::time_point coopNextDue{};
+
         /// Publish def's tunables to the live atomics and bump the epoch. Call
         /// after mutating def (under the scheduler mutex).
         void publishTunables() {
@@ -270,6 +313,17 @@ private:
     void classLoop(ClassRunnerState& runner);
     void isolatedLoop(LoadedModule& mod, TaskConfig config, TaskState& state);
 
+    /// One sweep over a class's members (preCyclic → cyclic → I/O → postCyclic)
+    /// with per-member/class metrics. Shared by classLoop (native thread) and
+    /// tickOnce (cooperative driver); the caller owns timing/pacing.
+    void sweepClassOnce(ClassRunnerState& runner);
+
+    /// Quarantine a module that threw from a guarded call and report the fault:
+    /// set faulted + ModuleState::Error, stamp last-fault fields, log, and notify
+    /// the fault sink (if any). Called from the worker thread, off the signal path.
+    void recordModuleFault(TaskState& state, LoadedModule& mod,
+                           diag::Phase phase, std::string_view message);
+
     // ---- State ------------------------------------------------------------------
 
     SchedulerConfig                                                  schedCfg_;
@@ -285,6 +339,7 @@ private:
     ModuleLoader*                                                    loader_       = nullptr;
     std::shared_mutex*                                               moduleMutex_  = nullptr;
     IOMapper*                                                        ioMapper_     = nullptr;
+    diag::IFaultSink*                                                faultSink_    = nullptr;
 };
 
 } // namespace loom

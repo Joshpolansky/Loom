@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <future>
 #include <mutex>
@@ -11,6 +12,8 @@
 #include <vector>
 
 namespace loom {
+
+class CommandChannel;  // loom/command.h — registered here, looked up by consumers
 
 /// Result of a service call.
 struct CallResult {
@@ -145,7 +148,16 @@ public:
             }
             handler = it->second;
         }
-        return handler(request);
+        // A throwing service handler must not unwind into the caller (which may
+        // be a cyclic thread or the HTTP thread) — return an error instead.
+        // Dependency-free (std only): keeps the SDK clean of diagnostics deps.
+        try {
+            return handler(request);
+        } catch (const std::exception& e) {
+            return {false, {}, std::string("service threw: ") + e.what()};
+        } catch (...) {
+            return {false, {}, "service threw: unknown exception"};
+        }
     }
 
     // =========================================================================
@@ -156,6 +168,81 @@ public:
         return std::async(std::launch::async, [this, service, req = std::move(request)]() {
             return call(service, req);
         });
+    }
+
+    // =========================================================================
+    // Command channels (async-command providers)
+    // =========================================================================
+
+    /// A provider registers its CommandChannel under its module id; consumers
+    /// look it up via CommandClient. Lifetime is the provider's — it must
+    /// unregister on unload (Module does this in cleanupSubscriptions).
+    inline void registerCommandChannel(const std::string& provider, CommandChannel* channel) {
+        std::lock_guard lock(commandMutex_);
+        commandChannels_[provider] = channel;
+    }
+
+    inline void unregisterCommandChannel(const std::string& provider) {
+        std::lock_guard lock(commandMutex_);
+        commandChannels_.erase(provider);
+    }
+
+    inline CommandChannel* commandChannel(const std::string& provider) const {
+        std::lock_guard lock(commandMutex_);
+        auto it = commandChannels_.find(provider);
+        return it == commandChannels_.end() ? nullptr : it->second;
+    }
+
+    // =========================================================================
+    // Ports (typed connection points for continuous data binding)
+    //
+    // A provider exposes a typed pointer (e.g. an axis's per-axis AxisInterface)
+    // under a name; consumers resolve it with a type-id check. Unlike a command
+    // channel this is continuous shared data, not async one-shot work; unlike
+    // getRuntimeAs it exposes only the named cell, not the whole runtime. The
+    // generation counter lets consumers cache the pointer and re-resolve only
+    // when the registry changes (see loom/port.h PortRef).
+    // =========================================================================
+
+    struct PortEntry {
+        void*       ptr = nullptr;
+        std::string type_id;   // matched against T::kTypeId on typed resolve
+    };
+
+    inline void registerPort(const std::string& name, void* ptr, std::string_view typeId) {
+        std::lock_guard lock(portMutex_);
+        ports_[name] = PortEntry{ptr, std::string(typeId)};
+        ++portGeneration_;
+    }
+
+    inline void unregisterPort(const std::string& name) {
+        std::lock_guard lock(portMutex_);
+        if (ports_.erase(name) != 0) ++portGeneration_;
+    }
+
+    inline PortEntry lookupPort(const std::string& name) const {
+        std::lock_guard lock(portMutex_);
+        auto it = ports_.find(name);
+        return it == ports_.end() ? PortEntry{} : it->second;
+    }
+
+    /// Bumped on every (un)register, so consumers can detect a changed registry
+    /// without re-doing a string lookup every cycle.
+    inline uint64_t portGeneration() const {
+        std::lock_guard lock(portMutex_);
+        return portGeneration_;
+    }
+
+    /// Typed resolve: nullptr if the port is absent or its type id doesn't match
+    /// T::kTypeId.
+    template <class T>
+    T* port(const std::string& name) const {
+        auto e = lookupPort(name);
+        if (!e.ptr) return nullptr;
+        if constexpr (requires { T::kTypeId; }) {
+            if (e.type_id != T::kTypeId) return nullptr;
+        }
+        return static_cast<T*>(e.ptr);
     }
 
     // =========================================================================
@@ -212,6 +299,13 @@ private:
     mutable std::mutex serviceMutex_;
     std::unordered_map<std::string, ServiceHandler> serviceHandlers_;
     std::unordered_map<std::string, std::string> serviceSchemas_;
+
+    mutable std::mutex commandMutex_;
+    std::unordered_map<std::string, CommandChannel*> commandChannels_;
+
+    mutable std::mutex portMutex_;
+    std::unordered_map<std::string, PortEntry> ports_;
+    uint64_t portGeneration_ = 1;   // nonzero so a freshly-default PortRef re-resolves
 };
 
 } // namespace loom

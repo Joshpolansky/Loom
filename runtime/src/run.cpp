@@ -1,6 +1,7 @@
 #include "loom/runtime_core.h"
 #include "loom/server.h"
 #include "loom/version.h"
+#include "loom/diag/crash_handler.h"
 
 #include <spdlog/spdlog.h>
 
@@ -87,6 +88,7 @@ namespace {
                   << "  --cycle-ms <ms>      Default cycle period in milliseconds (default: 100)\n"
                   << "  --port <port>        HTTP/WebSocket server port (default: 8080)\n"
                   << "  --bind <addr>        Bind address (default: 127.0.0.1, use 0.0.0.0 for all interfaces)\n"
+                  << "  --log-system-metrics Log a periodic process memory/CPU line (always served on /api/system)\n"
                   << "  --version            Print version and exit\n"
                   << "  --help, -h           Show this help and exit\n";
     }
@@ -102,6 +104,7 @@ int run(int argc, char* argv[]) {
     std::string bindAddress = "127.0.0.1";
     int cycleMs = 100;
     int port = 8080;
+    bool logSystemMetrics = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -117,6 +120,8 @@ int run(int argc, char* argv[]) {
             port = std::stoi(argv[++i]);
         } else if (arg == "--bind" && i + 1 < argc) {
             bindAddress = argv[++i];
+        } else if (arg == "--log-system-metrics") {
+            logSystemMetrics = true;
         } else if (arg == "--version") {
             std::cout << "loom " << kSdkVersion << "\n";
             return 0;
@@ -149,6 +154,11 @@ int run(int argc, char* argv[]) {
     std::signal(SIGINT,  signalHandler);
     std::signal(SIGTERM, signalHandler);
 
+    // Process-global crash capture: any fatal signal / SEH / unhandled C++
+    // exception writes a crash report (faulting module/phase + build id + stack)
+    // to <dataDir>/crash before the process dies. Covers module and runtime faults.
+    loom::diag::CrashHandler::install({std::filesystem::path(dataDir) / "crash"});
+
     RuntimeConfig runtimeCfg;
     runtimeCfg.moduleDir = moduleDirs.front();
     for (size_t i = 1; i < moduleDirs.size(); ++i) {
@@ -156,6 +166,7 @@ int run(int argc, char* argv[]) {
     }
     runtimeCfg.dataDir             = dataDir;
     runtimeCfg.defaultCyclePeriod  = std::chrono::milliseconds(cycleMs);
+    runtimeCfg.logSystemMetrics    = logSystemMetrics;
     RuntimeCore core(runtimeCfg);
     core.loadModules();
 
