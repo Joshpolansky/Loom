@@ -8,7 +8,13 @@
 // "ns=1;s=/module/<id>/runtime/<path>" (see api/machine.ts node()), which the
 // host maps to the module's reflected readField/writeField. Subscriptions are
 // satisfied by polling the reflected value each tick — no push channel needed.
-import { ConnectionState } from '@loupeteam/lux-connect';
+//
+// No dependency on @loupeteam/lux-connect: lux-react's ICommLayer contract
+// types connectionState as `ConnectionState | string`, so the plain string
+// 'connected' (lux-connect's own ConnectionState.CONNECTED enum member, at
+// runtime, is exactly this string) satisfies it without pulling in the
+// package just for one enum value.
+const CONNECTED = 'connected';
 
 /** The runtime service this machine reads/writes through (see loomRuntime.js). */
 export interface NodeAccess {
@@ -16,7 +22,7 @@ export interface NodeAccess {
   writeNode(nodeId: string, value: unknown): boolean;
 }
 
-type StateHandler = (state: ConnectionState) => void;
+type StateHandler = (state: string) => void;
 interface Sub { nodeId: string; cb: (v: unknown) => void; lastRaw: string; }
 
 export class WasmMachine {
@@ -32,15 +38,15 @@ export class WasmMachine {
   }
 
   // --- connection (always "connected": the runtime is in-process) ---
-  get connectionState(): ConnectionState { return ConnectionState.CONNECTED; }
+  get connectionState(): string { return CONNECTED; }
   isConnected(): boolean { return true; }
-  async connect(): Promise<void> { this.handlers.forEach((h) => h(ConnectionState.CONNECTED)); }
+  async connect(): Promise<void> { this.handlers.forEach((h) => h(CONNECTED)); }
   async disconnect(): Promise<void> {}
   async reconnect(): Promise<void> {}
   async testConnection(): Promise<void> {}
   onConnectionStateChanged(handler: StateHandler): void {
     this.handlers.add(handler);
-    handler(ConnectionState.CONNECTED);
+    handler(CONNECTED);
   }
 
   // --- reads / writes ---

@@ -129,8 +129,10 @@ const char* loom_request(const char* method, const char* path, const char* body)
 
 // Load an arbitrary user module from a file already written into the Emscripten
 // FS (the JS service FS.writeFile()s the bytes, then calls this). Copies it into
-// the module dir, loads + starts it cooperatively. Returns the loaded module id
-// (empty string on failure), valid until the next exported call.
+// the module dir, loads + starts it in whichever mode the runtime booted
+// (threaded here -- loom_init sets cooperative=false, so uploadModule() starts
+// real class threads). Returns the loaded module id (empty string on failure),
+// valid until the next exported call.
 EMSCRIPTEN_KEEPALIVE
 const char* loom_load_module(const char* path) {
     if (!g_core || !path) return stableString("");

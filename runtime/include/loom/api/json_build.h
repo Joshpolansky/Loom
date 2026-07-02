@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <deque>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace loom {
@@ -24,7 +25,12 @@ std::string serializeCycleHistory(const std::vector<MetricSample>& samples, std:
 std::string serializeCycleHistory(const std::deque<MetricSample>& samples, std::size_t maxSamples = 0);
 
 /// Per-module info object (id, name, class, state, path, stats + cycle history).
-std::string moduleInfoJson(const LoadedModule& mod, const Scheduler& scheduler);
+/// `extraFields`, if non-empty, is spliced into the object as additional
+/// members (raw JSON, without enclosing braces or a leading comma) — e.g.
+/// `"data":{...}` to build the ModuleDetail shape. Kept inside the builder so
+/// callers never have to do brace surgery on its output.
+std::string moduleInfoJson(const LoadedModule& mod, const Scheduler& scheduler,
+                           std::string_view extraFields = {});
 
 /// Cycle/jitter history as `{"samples":[...], "latest":<ms>}`. `since` filters to
 /// samples newer than the given timestamp; `binMs` > 0 aggregates into fixed-width

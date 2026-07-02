@@ -56,6 +56,30 @@ function(loom_target_dsym target)
     endif()
 endfunction()
 
+# Target-scoped half of Emscripten wasm SIDE_MODULE support (see
+# loom_add_module below for the GLOBAL-property half, which — unlike these —
+# MUST be set before add_library() runs to take effect for that target):
+#   1. -sSIDE_MODULE=1 (compile + link) is what actually produces a dlopen-able
+#      wasm binary (a `dylink.0` section) instead of a normal static archive.
+#   2. -fexceptions is required so real C++ exceptions work — the module ABI
+#      boundary (dlopen'd module <-> the loom_wasm MAIN_MODULE host) needs
+#      matching exception support on both sides, and every Loom module's SDK
+#      surface (guard(), command dispatch) relies on real exception unwinding.
+#      De-risked standalone (cross-module throw/catch across a real worker
+#      thread) in the loom repo's spike/phaseC-pthread-dlopen/.
+#   3. FMT_CONSTEVAL= neutralizes fmt's consteval format-string checks, which
+#      emcc's clang rejects; harmless if a module never includes spdlog/fmt.
+# All apply per-module (not globally), so a consumer's own CMakeLists.txt needs
+# zero Emscripten-specific configuration for modules built via loom_add_module.
+function(loom_target_wasm_module_support target)
+    if(NOT EMSCRIPTEN)
+        return()
+    endif()
+    target_compile_options(${target} PRIVATE -sSIDE_MODULE=1 -fexceptions)
+    target_link_options(${target} PRIVATE -sSIDE_MODULE=1 -fexceptions)
+    target_compile_definitions(${target} PRIVATE FMT_CONSTEVAL=)
+endfunction()
+
 # loom_add_module(<name>
 #     SOURCES  <src...>
 #     [LINK    <libs...>]
@@ -65,10 +89,19 @@ endfunction()
 # Builds a Loom module plugin: a MODULE library with no "lib" prefix, the
 # platform module suffix, hidden default visibility, linked against loom::sdk,
 # and with crash-symbolization debug info (PDB/DWARF/dSYM) emitted next to it.
+# On Emscripten, produces a dlopen-able wasm SIDE_MODULE instead (see
+# loom_target_wasm_module_support above) — no extra configuration needed by
+# the caller; the SAME loom_add_module() call works for native and wasm.
 function(loom_add_module name)
     cmake_parse_arguments(ARG "" "OUTPUT_DIRECTORY" "SOURCES;LINK;INCLUDE" ${ARGN})
     if(NOT ARG_SOURCES)
         message(FATAL_ERROR "loom_add_module(${name}): SOURCES is required")
+    endif()
+
+    # Must run BEFORE add_library(MODULE): TARGET_SUPPORTS_SHARED_LIBS is read
+    # at add_library() time, so setting it any later has no effect on this call.
+    if(EMSCRIPTEN)
+        set_property(GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS TRUE)
     endif()
 
     add_library(${name} MODULE ${ARG_SOURCES})
@@ -93,4 +126,5 @@ function(loom_add_module name)
 
     loom_target_debug_info(${name})
     loom_target_dsym(${name})
+    loom_target_wasm_module_support(${name})
 endfunction()

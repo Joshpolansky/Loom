@@ -1,0 +1,22 @@
+{
+  "name": "@joshpolansky/loom-wasm",
+  "version": "0.3.0",
+  "description": "Boot the Loom runtime in-browser via WebAssembly and get a lux-react-compatible machine connection.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "wasm"
+  ],
+  "scripts": {
+    "build": "tsc -b && node -e \"for (const f of ['loomRuntime.js','loomRuntime.d.ts']) require('fs').copyFileSync('src/'+f, 'dist/'+f)\"",
+    "build:wasm": "./scripts/build-wasm.sh"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com/"
+  }
+}
