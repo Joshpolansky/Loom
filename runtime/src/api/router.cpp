@@ -518,6 +518,10 @@ Response dispatch(RuntimeCore& core, const Request& req) {
     // On a thread-free build the sampler never starts (see
     // SystemMetrics::start()), so this serves zeros and an empty history
     // rather than 404ing — the shape stays stable across hosts.
+    // History points carry only the chartable series (ts/rssBytes/cpuPercent),
+    // deliberately leaner than the top-level sample: peakRssBytes is monotonic
+    // (the current value subsumes the history) and uptimeSec is derivable from
+    // ts — repeating them 600x per poll is pure payload bloat.
     if (method == Method::GET && path == "/api/system") {
         const auto cur  = core.systemMetrics().current();
         const auto hist = core.systemMetrics().history();

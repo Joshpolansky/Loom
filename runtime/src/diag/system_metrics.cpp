@@ -97,6 +97,7 @@ uint64_t SystemMetrics::readRssBytes() {
     std::fclose(f);
     if (got < 2) return 0;
     long pageSize = sysconf(_SC_PAGESIZE);
+    if (pageSize <= 0) return 0;  // sysconf can return -1; casting that would explode the value
     return static_cast<uint64_t>(residentPages) * static_cast<uint64_t>(pageSize);
 }
 
@@ -168,7 +169,10 @@ void SystemMetrics::run() {
         if (wallNs > 0.0 && cpuNs >= lastCpuNs) {
             // (CPU time used / wall time) gives 0–N_cores; normalize to 0–100%.
             cpuPct = (static_cast<double>(cpuNs - lastCpuNs) / wallNs) * 100.0 / cores;
-            if (cpuPct < 0.0) cpuPct = 0.0;
+            // Clamp both ends: timer quantization can push the ratio slightly
+            // past 100, and the published contract is 0–100 of the machine.
+            if (cpuPct < 0.0)   cpuPct = 0.0;
+            if (cpuPct > 100.0) cpuPct = 100.0;
         }
         lastCpuNs = cpuNs;
         lastWall  = now;
