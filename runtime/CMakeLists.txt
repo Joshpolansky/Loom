@@ -19,35 +19,128 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 endif()
 
 # ---------------------------------------------------------------------------
-# Static library — all runtime logic, exported for consumers to link against.
-# Consumers add a thin main.cpp that calls loom::run(argc, argv).
+# loom_core — portable engine. No networking, signals, or process lifecycle:
+# the scheduler, data engine/store, module loader, IO mapper, oscilloscope and
+# the portable diagnostics. Depends only on the SDK, spdlog, glaze (via the SDK)
+# and dlopen. This is the layer every host links against — the native host
+# below, and (out of tree, on branch wasm-spike) an Emscripten/WASM host.
+#
+# NB: keep this list free of any TU that needs sockets (Crow), signals, or
+# in-process stack symbolization (cpptrace) — those belong in loom_runtime.
 # ---------------------------------------------------------------------------
-add_library(loom_runtime STATIC
-    src/run.cpp
+add_library(loom_core STATIC
     src/runtime_core.cpp
+    src/runtime_heap.cpp
     src/module_loader.cpp
     src/scheduler.cpp
     src/scheduler_config.cpp
     src/data_engine.cpp
     src/data_store.cpp
     src/io_mapper.cpp
-    src/server.cpp
-    src/opcua_rest_server.cpp
     src/oscilloscope.cpp
     src/module_watcher.cpp
+    src/api/router.cpp
+    src/diag/breadcrumb.cpp
+    src/diag/fault_report.cpp
+    src/diag/fault_store.cpp
+    src/diag/runtime_fault_sink.cpp
+    src/diag/system_metrics.cpp
 )
 
-target_include_directories(loom_runtime PUBLIC
+# Process memory metrics need psapi (GetProcessMemoryInfo) on Windows; macOS uses
+# the Mach task API (in the system libs) and Linux reads /proc — no extra links.
+# system_metrics.cpp lives in loom_core (RuntimeCore owns the sampler), so the
+# link goes here rather than loom_runtime.
+if(WIN32)
+    target_link_libraries(loom_core PRIVATE psapi)
+endif()
+
+target_include_directories(loom_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(loom_runtime PUBLIC
+# Build type stamped into crash reports (works for single- and multi-config).
+target_compile_definitions(loom_core PRIVATE LOOM_BUILD_TYPE="$<CONFIG>")
+
+target_link_libraries(loom_core PUBLIC
     loom::sdk
     spdlog::spdlog
-    Crow::Crow
     ${CMAKE_DL_LIBS}
 )
+
+if(EMSCRIPTEN)
+
+# ---------------------------------------------------------------------------
+# loom_host_wasm — WASM host: run_wasm.cpp + loom_core built as a MAIN_MODULE so
+# module plugins can be dlopen'd at runtime. No Crow / cpptrace / signals. Real
+# pthreads: startClasses() spawns actual Worker-backed class threads (same code
+# path as native), so cyclic() timing/pacing/pause-handshake work unmodified --
+# no Scheduler::tickOnce() involved (see run_wasm.cpp's loom_init/loom_tick).
+# Emits loom_wasm.js + loom_wasm.wasm.
+# ---------------------------------------------------------------------------
+add_executable(loom_host_wasm src/run_wasm.cpp)
+target_compile_definitions(loom_host_wasm PRIVATE LOOM_BUILD_TYPE="$<CONFIG>")
+target_link_libraries(loom_host_wasm PRIVATE loom_core)
+set_target_properties(loom_host_wasm PROPERTIES OUTPUT_NAME loom_wasm SUFFIX ".js")
+target_link_options(loom_host_wasm PRIVATE
+    "-sMAIN_MODULE=1"
+    "-sALLOW_MEMORY_GROWTH=1"
+    "-sMODULARIZE=1"
+    "-sEXPORT_NAME=createLoomModule"
+    "-sENVIRONMENT=web,worker,node"
+    "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS']"
+    # Pre-warm a worker pool: the 3 built-in classes (fast/normal/slow) plus a
+    # spare for an isolated-thread or long-running module. Emscripten can grow
+    # beyond this on demand, but that path is less exercised -- size for the
+    # common case rather than relying on it.
+    "-sPTHREAD_POOL_SIZE=4")
+
+# Stage the host straight into the frontend's static assets on every build, so
+# `cmake --build` alone is enough — no manual cp. Mirrors link_frontend_ui below
+# (native build symlinks data/UI -> frontend/dist for the same reason).
+if(EXISTS "${CMAKE_SOURCE_DIR}/frontend")
+    add_custom_command(TARGET loom_host_wasm POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/frontend/public"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:loom_host_wasm>"
+            "${CMAKE_SOURCE_DIR}/frontend/public/"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE_DIR:loom_host_wasm>/loom_wasm.wasm"
+            "${CMAKE_SOURCE_DIR}/frontend/public/"
+        COMMENT "Staging loom_wasm.js/.wasm into frontend/public/"
+        VERBATIM
+    )
+endif()
+
+else() # ---- native host ----------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# loom_runtime — native host layer over loom_core: the HTTP/WebSocket and
+# OPC-UA servers, process lifecycle / signal handling, and in-process crash
+# capture. It aggregates loom_core (PUBLIC), so the installed and conan-consumed
+# `loom_runtime` target keeps providing the full runtime exactly as before.
+# Consumers still add a thin main.cpp that calls loom::run(argc, argv).
+# ---------------------------------------------------------------------------
+add_library(loom_runtime STATIC
+    src/run.cpp
+    src/server.cpp
+    src/opcua_rest_server.cpp
+    src/diag/crash_handler.cpp
+    src/diag/symbolizer.cpp
+)
+
+# Build type stamped into crash reports (works for single- and multi-config).
+target_compile_definitions(loom_runtime PRIVATE LOOM_BUILD_TYPE="$<CONFIG>")
+
+target_link_libraries(loom_runtime PUBLIC
+    loom_core
+    Crow::Crow
+)
+
+# Symbolization for crash reports. PRIVATE: confined to the diag symbolizer TU,
+# never exposed in loom_runtime's public headers (SDK/consumers stay clean of it).
+target_link_libraries(loom_runtime PRIVATE cpptrace::cpptrace)
 
 # ---------------------------------------------------------------------------
 # Thin executable — just calls loom::run(argc, argv).
@@ -91,7 +184,7 @@ endif()
 # ---------------------------------------------------------------------------
 include(GNUInstallDirs)
 
-install(TARGETS loom_runtime
+install(TARGETS loom_runtime loom_core
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 
@@ -102,6 +195,15 @@ install(DIRECTORY include/
 install(TARGETS loom
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+# Ship the Windows PDB next to the binary so crash reports symbolize in-process
+# on the downloaded runtime. OPTIONAL: absent when LOOM_WITH_DEBUG_INFO is OFF.
+# Linux DWARF is embedded in the unstripped binary; the macOS .dSYM is produced
+# from the binary in the CI staging step (dsymutil).
+if(MSVC)
+    install(FILES $<TARGET_PDB_FILE:loom>
+        DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
+endif()
 
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/frontend/dist/"
     DESTINATION data/UI
@@ -116,4 +218,6 @@ install(DIRECTORY "${CMAKE_SOURCE_DIR}/frontend/dist/"
     DESTINATION ${CMAKE_INSTALL_DATADIR}/loom/ui
     OPTIONAL
 )
+
+endif() # EMSCRIPTEN / native host
 

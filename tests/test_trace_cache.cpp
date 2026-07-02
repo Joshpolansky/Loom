@@ -37,8 +37,9 @@ TEST_F(TraceCacheTest, ExampleMotorRuntimeFieldsCached) {
     auto* mod = loader.get(id);
     ASSERT_NE(mod, nullptr);
 
-    // initialize to populate runtime defaults
-    mod->instance->init(loom::InitContext{});
+    // initialize to populate runtime defaults (initGuarded opens the
+    // registerExtension() window; direct init() would throw)
+    mod->instance->initGuarded(loom::InitContext{});
 
     std::vector<std::string> fields = {"current_speed","position","at_speed","cycle_count", "history", "history/0/current_speed", "history/0/position", "history/0/at_speed", "history/1/current_speed", "history/1/position", "history/1/at_speed"};
     for (auto& f : fields) {

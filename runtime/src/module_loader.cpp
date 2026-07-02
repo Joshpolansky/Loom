@@ -5,6 +5,10 @@
 #include <spdlog/spdlog.h>
 #include <atomic>
 
+#if defined(_WIN32)
+#include <process.h>    // _getpid()
+#endif
+
 namespace loom {
 
 #if defined(_WIN32)
@@ -82,10 +86,16 @@ std::string ModuleLoader::load(const std::filesystem::path& soPath,
 #if defined(_WIN32)
     // On Windows, never load the original DLL directly. Loading it even once can
     // cause the debugger to bind and lock the build-side PDB, breaking hot-rebuild.
+    //
+    // The shadow dir embeds the current PID so that concurrent test processes
+    // (each with their own gShadowLoadCounter starting at 0) never collide on
+    // the same path, which would cause copy_file to race and fail with
+    // "file is being used by another process".
     std::string shadowKey = instanceId.empty() ? soPath.stem().string() : instanceId;
     auto shadowSeq = ++gShadowLoadCounter;
     std::filesystem::path shadowDir =
-        soPath.parent_path() / ".shadow" / shadowKey / std::to_string(shadowSeq);
+        soPath.parent_path() / ".shadow" / shadowKey /
+        (std::to_string(_getpid()) + "_" + std::to_string(shadowSeq));
     std::filesystem::path shadowPath = shadowDir / soPath.filename();
 
     auto cleanupShadowDir = [&]() {

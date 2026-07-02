@@ -7,4 +7,8 @@ namespace loom {
 /// to detect version mismatches at load time.
 inline constexpr const char* kSdkVersion = "@LOOM_SDK_VERSION@";
 
+/// Git commit the SDK was built from ("unknown" if git/.git was unavailable at
+/// build time). Used in crash reports to map a fault back to exact source.
+inline constexpr const char* kGitSha = "@LOOM_GIT_SHA@";
+
 } // namespace loom
